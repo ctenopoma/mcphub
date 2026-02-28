@@ -137,6 +137,19 @@ McpHub/
     └── frontend/             # Next.js + shadcn/ui
 ```
 
+## トラブルシューティング
+
+### `error getting credentials` でビルドが失敗する
+
+ホスト側の Docker クレデンシャルヘルパーの問題です。以下を実行してください:
+
+```bash
+mkdir -p ~/.docker
+echo '{"credsStore":""}' > ~/.docker/config.json
+```
+
+その後 `docker compose build` を再実行してください。
+
 ## 技術スタック
 
 | レイヤー | 技術 |
