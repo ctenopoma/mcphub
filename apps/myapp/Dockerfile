@@ -25,6 +25,10 @@ COPY . .
 # Create uploads directory
 RUN mkdir -p uploads
 
+# APP_NAME is passed at runtime by the manager (e.g. "myapp")
+ENV APP_NAME=app
+
 # Start both FastAPI and code-server
-CMD code-server --auth password --bind-addr 0.0.0.0:8000 /app & \
+# code-server uses --abs-proxy-base-path so it works behind Traefik at /<APP_NAME>-ide/
+CMD code-server --auth password --bind-addr 0.0.0.0:8000 --abs-proxy-base-path /${APP_NAME}-ide /app & \
     uvicorn app:app --host 0.0.0.0 --port 80 --reload

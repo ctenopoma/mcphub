@@ -141,12 +141,20 @@ McpHub/
 
 ### `error getting credentials` でビルドが失敗する
 
-ホスト側の Docker クレデンシャルヘルパーの問題です。以下を実行してください:
+ホスト側の Docker クレデンシャルヘルパーの問題です。
 
+**Linux / macOS:**
 ```bash
 mkdir -p ~/.docker
 echo '{"credsStore":""}' > ~/.docker/config.json
 ```
+
+**Windows (PowerShell):**
+```powershell
+[System.IO.File]::WriteAllText("$env:USERPROFILE\.docker\config.json", '{"credsStore":""}')
+```
+
+> ⚠️ Windows では `echo` や `>` でファイルを作ると BOM が付いて Docker がパースに失敗します。必ず上記の `WriteAllText` を使ってください。
 
 その後 `docker compose build` を再実行してください。
 

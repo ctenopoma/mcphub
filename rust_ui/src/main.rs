@@ -23,7 +23,9 @@ async fn main() {
         .route("/apps", get(list_apps))
         .route("/deploy/{app_name}", post(deploy_app))
         .route("/logs/{app_name}", get(get_logs))
-        .route("/delete/{app_name}", post(delete_app));
+        .route("/delete/{app_name}", post(delete_app))
+        .route("/password/{app_name}", get(get_password))
+        .route("/password/{app_name}/reset", post(reset_password));
 
     let app = Router::new()
         .nest("/api", api_routes)
@@ -111,6 +113,8 @@ async fn deploy_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
             "run", "-d",
             "--name", &app_name,
             "--network", "mcp-net",
+            // Pass app name so code-server can set --base-path
+            "-e", &format!("APP_NAME={}", app_name),
             // Traefik labels
             &format!("--label=traefik.enable=true"),
             // API setup
@@ -119,9 +123,11 @@ async fn deploy_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
             &format!("--label=traefik.http.middlewares.{}-strip.stripprefix.prefixes=/{}/, /{}", app_name, app_name, app_name),
             &format!("--label=traefik.http.routers.{}.middlewares={}-strip", app_name, app_name),
             &format!("--label=traefik.http.services.{}.loadbalancer.server.port=80", app_name),
-            // IDE setup
-            &format!("--label=traefik.http.routers.{}-ide.rule=PathPrefix(`/{}-ide/`)", app_name, app_name),
+            // IDE setup — strip prefix so code-server sees clean paths
+            &format!("--label=traefik.http.routers.{}-ide.rule=PathPrefix(`/{}-ide`)", app_name, app_name),
             &format!("--label=traefik.http.routers.{}-ide.service={}-ide", app_name, app_name),
+            &format!("--label=traefik.http.middlewares.{}-ide-strip.stripprefix.prefixes=/{}-ide", app_name, app_name),
+            &format!("--label=traefik.http.routers.{}-ide.middlewares={}-ide-strip", app_name, app_name),
             &format!("--label=traefik.http.services.{}-ide.loadbalancer.server.port=8000", app_name),
             &app_name
         ])
@@ -155,4 +161,53 @@ async fn get_logs(Path(app_name): Path<String>) -> String {
         .expect("Failed to execute docker logs");
 
     String::from_utf8_lossy(&output.stdout).to_string() + &String::from_utf8_lossy(&output.stderr)
+}
+
+async fn get_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+    let output = Command::new("docker")
+        .args(["exec", &app_name, "cat", "/root/.config/code-server/config.yaml"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let config = String::from_utf8_lossy(&o.stdout);
+            // Parse password from config.yaml: "password: xxxxx"
+            let password = config
+                .lines()
+                .find(|l| l.starts_with("password:"))
+                .map(|l| l.trim_start_matches("password:").trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            Json(serde_json::json!({"password": password}))
+        }
+        _ => Json(serde_json::json!({"error": "Container not running or config not found"}))
+    }
+}
+
+async fn reset_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+    // Generate a simple random password
+    let new_password = format!("{:016x}", rand::random::<u64>());
+
+    // Write new password to code-server config
+    let sed_cmd = format!("s/^password: .*/password: {}/", new_password);
+    let write_result = Command::new("docker")
+        .args(["exec", &app_name, "sed", "-i", &sed_cmd, "/root/.config/code-server/config.yaml"])
+        .status();
+
+    if let Ok(s) = write_result {
+        if s.success() {
+            // Restart code-server process inside the container
+            let _ = Command::new("docker")
+                .args(["exec", &app_name, "pkill", "-f", "code-server"])
+                .status();
+            // code-server will be restarted by the CMD in Dockerfile since it's backgrounded with &
+            // Wait a moment and start it again
+            let _ = Command::new("docker")
+                .args(["exec", "-d", &app_name, "sh", "-c",
+                    &format!("code-server --auth password --bind-addr 0.0.0.0:8000 --abs-proxy-base-path /{}-ide /app", app_name)])
+                .status();
+
+            return Json(serde_json::json!({"password": new_password}));
+        }
+    }
+    Json(serde_json::json!({"error": "Failed to reset password"}))
 }

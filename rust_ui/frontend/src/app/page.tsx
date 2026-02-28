@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Terminal, Trash2, ExternalLink, RefreshCw } from "lucide-react";
+import { Play, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface AppStatus {
@@ -15,6 +15,7 @@ interface AppStatus {
 export default function Dashboard() {
   const [apps, setApps] = useState<AppStatus[]>([]);
   const [logs, setLogs] = useState<{ [key: string]: string }>({});
+  const [passwords, setPasswords] = useState<{ [key: string]: string }>({});
   const [loading, setLoading] = useState(false);
 
   const fetchApps = async () => {
@@ -24,7 +25,6 @@ export default function Dashboard() {
         const data = await res.json();
         setApps(data);
       } else {
-        // Mock data when backend is not ready
         setApps([{ name: "myapp", status: "Not Started" }]);
       }
     } catch (e) {
@@ -59,6 +59,11 @@ export default function Dashboard() {
         delete newLogs[appName];
         return newLogs;
       });
+      setPasswords((prev) => {
+        const p = { ...prev };
+        delete p[appName];
+        return p;
+      });
     } finally {
       setLoading(false);
     }
@@ -77,6 +82,41 @@ export default function Dashboard() {
       console.error(e);
       setLogs((prev) => ({ ...prev, [appName]: "Error fetching logs." }));
     }
+  };
+
+  const fetchPassword = async (appName: string) => {
+    try {
+      const res = await fetch(`/api/password/${appName}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.password) {
+          setPasswords((prev) => ({ ...prev, [appName]: data.password }));
+        } else {
+          setPasswords((prev) => ({ ...prev, [appName]: data.error || "Error" }));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const resetPassword = async (appName: string) => {
+    if (!confirm("パスワードをリセットしますか？")) return;
+    try {
+      const res = await fetch(`/api/password/${appName}/reset`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.password) {
+          setPasswords((prev) => ({ ...prev, [appName]: data.password }));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
   };
 
   return (
@@ -136,7 +176,47 @@ export default function Dashboard() {
                       <Terminal className="mr-2 h-4 w-4" />
                       Logs
                     </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => fetchPassword(app.name)}
+                      disabled={!isUp}
+                    >
+                      <Key className="mr-2 h-4 w-4" />
+                      Password
+                    </Button>
                   </div>
+
+                  {passwords[app.name] && (
+                    <div className="mt-3 rounded-md bg-muted p-3 border border-border">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-1">IDE Password</p>
+                          <code className="text-sm font-mono font-semibold">{passwords[app.name]}</code>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => copyToClipboard(passwords[app.name])}
+                            title="Copy"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => resetPassword(app.name)}
+                            title="Reset Password"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {logs[app.name] && (
                     <div className="mt-4 rounded-md bg-muted p-2 h-48 border border-border">
@@ -152,7 +232,7 @@ export default function Dashboard() {
                     variant="default"
                     disabled={!isUp}
                     onClick={() => {
-                      const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8080";
+                      const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8085";
                       const host = window.location.hostname;
                       window.open(`http://${host}:${traefikPort}/${app.name}-ide/`, "_blank");
                     }}
