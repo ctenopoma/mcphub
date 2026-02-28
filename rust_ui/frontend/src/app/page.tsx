@@ -69,7 +69,17 @@ export default function Dashboard() {
     }
   };
 
-  const fetchLogs = async (appName: string) => {
+  const toggleLogs = async (appName: string) => {
+    if (logs[appName]) {
+      // Toggle off
+      setLogs((prev) => {
+        const newLogs = { ...prev };
+        delete newLogs[appName];
+        return newLogs;
+      });
+      return;
+    }
+
     try {
       const res = await fetch(`/api/logs/${appName}`);
       if (res.ok) {
@@ -84,7 +94,17 @@ export default function Dashboard() {
     }
   };
 
-  const fetchPassword = async (appName: string) => {
+  const togglePassword = async (appName: string) => {
+    if (passwords[appName]) {
+      // Toggle off
+      setPasswords((prev) => {
+        const p = { ...prev };
+        delete p[appName];
+        return p;
+      });
+      return;
+    }
+
     try {
       const res = await fetch(`/api/password/${appName}`);
       if (res.ok) {
@@ -169,17 +189,17 @@ export default function Dashboard() {
                       Delete
                     </Button>
                     <Button
-                      variant="secondary"
+                      variant={logs[app.name] ? "default" : "secondary"}
                       size="sm"
-                      onClick={() => fetchLogs(app.name)}
+                      onClick={() => toggleLogs(app.name)}
                     >
                       <Terminal className="mr-2 h-4 w-4" />
                       Logs
                     </Button>
                     <Button
-                      variant="secondary"
+                      variant={passwords[app.name] ? "default" : "secondary"}
                       size="sm"
-                      onClick={() => fetchPassword(app.name)}
+                      onClick={() => togglePassword(app.name)}
                       disabled={!isUp}
                     >
                       <Key className="mr-2 h-4 w-4" />
