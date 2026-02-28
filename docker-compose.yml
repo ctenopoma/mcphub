@@ -19,6 +19,7 @@ services:
       - UI_PORT=${UI_PORT:-8081}
       - MCP_PORT=${MCP_PORT:-8000}
     volumes:
+      - ./apps:/apps
       - docker-data:/var/lib/docker
 
 volumes:

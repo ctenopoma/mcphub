@@ -113,6 +113,8 @@ async fn deploy_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
             "run", "-d",
             "--name", &app_name,
             "--network", "mcp-net",
+            // Mount app directory for code persistence across restarts
+            "-v", &format!("/apps/{}:/app", app_name),
             // Pass app name so code-server can set --base-path
             "-e", &format!("APP_NAME={}", app_name),
             // Traefik labels
