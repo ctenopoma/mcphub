@@ -19,7 +19,7 @@ FROM docker:24.0-dind AS runner
 
 WORKDIR /manager
 
-# Install requirements: python for MCP server, bash for entrypoint
+# Install requirements: python, bash, curl
 RUN apk add --no-cache \
     python3 \
     py3-pip \
@@ -28,14 +28,20 @@ RUN apk add --no-cache \
     iptables \
     ca-certificates
 
+# Fix Docker credential store issue for portability
+RUN mkdir -p /root/.docker && \
+    echo '{"credsStore":""}' > /root/.docker/config.json
+
 # Install Python packages
 COPY requirements.txt .
-# Use --break-system-packages because we are in alpine container and know what we are doing
 RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages
 
 # Copy binaries and assets from previous stages
 COPY --from=frontend-builder /app/out ./frontend/out
 COPY --from=rust-builder /app/target/release/rust_ui ./manager-ui
+
+# Embed app templates into the image
+COPY apps /apps
 
 # Setup entrypoint and MCP script
 COPY entrypoint.sh .

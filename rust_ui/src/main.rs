@@ -29,8 +29,10 @@ async fn main() {
         .nest("/api", api_routes)
         .fallback_service(serve_dir);
 
-    println!("Manager UI running on http://0.0.0.0:8081");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8081").await.unwrap();
+    let port = std::env::var("UI_PORT").unwrap_or_else(|_| "8081".to_string());
+    let bind_addr = format!("0.0.0.0:{}", port);
+    println!("Manager UI running on http://{}", bind_addr);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -38,7 +40,7 @@ async fn list_apps() -> Json<Vec<AppStatus>> {
     let mut apps = Vec::new();
 
     // Read directories in ../apps
-    let paths = match fs::read_dir("../apps") {
+    let paths = match fs::read_dir("/apps") {
         Ok(p) => p,
         Err(_) => return Json(apps),
     };
@@ -82,7 +84,7 @@ async fn list_apps() -> Json<Vec<AppStatus>> {
 }
 
 async fn deploy_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
-    let app_dir = format!("../apps/{}", app_name);
+    let app_dir = format!("/apps/{}", app_name);
 
     if !std::path::Path::new(&app_dir).exists() {
         return Json(serde_json::json!({"error": "App directory not found"}));

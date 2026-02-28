@@ -1,32 +1,37 @@
 #!/bin/bash
 set -e
 
-# Configure Docker daemon
+# Ensure iptables forwarding for Docker networking
+iptables -P FORWARD ACCEPT 2>/dev/null || true
+
+# Write daemon.json for DNS resolution inside DinD
 mkdir -p /etc/docker
-cat <<EOF > /etc/docker/daemon.json
+cat <<'EOF' > /etc/docker/daemon.json
 {
   "dns": ["8.8.8.8", "8.8.4.4"],
-  "mtu": 1400
-}
-EOF
-cat <<EOF > /etc/docker/daemon.json
-{
-  "dns": ["8.8.8.8", "8.8.4.4"],
-  "mtu": 1400
+  "mtu": 1400,
+  "storage-driver": "overlay2"
 }
 EOF
 
 echo "Starting Docker daemon in background..."
-dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &
-sleep 5
+dockerd > /var/log/dockerd.log 2>&1 &
 
-echo "Creating internal Docker network if it doesn't exist..."
+# Wait for Docker daemon to be ready
+echo "Waiting for Docker daemon..."
+for i in $(seq 1 30); do
+  if docker info > /dev/null 2>&1; then
+    echo "Docker daemon is ready."
+    break
+  fi
+  sleep 1
+done
+
+echo "Creating internal Docker network..."
 docker network create mcp-net || true
 
 echo "Starting Traefik..."
-docker rm -f traefik || true
-# Ensure the image is present or use host DNS? Actually, DinD network might need a custom nameserver or we might need to use host network.
-# Let's try to pass --dns 8.8.8.8 to dockerd.
+docker rm -f traefik 2>/dev/null || true
 docker run -d \
   --name traefik \
   --network mcp-net \
@@ -37,9 +42,11 @@ docker run -d \
   --providers.docker=true \
   --providers.docker.exposedbydefault=false
 
-echo "Starting Rust Management UI..."
-/manager/manager-ui &
+UI_PORT="${UI_PORT:-8081}"
+MCP_PORT="${MCP_PORT:-8000}"
 
-echo "Starting Python MCP Server..."
-# Run MCP server in foreground to keep container alive
-python3 mcp_server.py
+echo "Starting Rust Management UI on port ${UI_PORT}..."
+HOST=0.0.0.0 UI_PORT="${UI_PORT}" /manager/manager-ui &
+
+echo "Starting Python MCP Server on port ${MCP_PORT}..."
+MCP_PORT="${MCP_PORT}" python3 mcp_server.py

@@ -151,7 +151,11 @@ export default function Dashboard() {
                     className="w-full font-semibold"
                     variant="default"
                     disabled={!isUp}
-                    onClick={() => window.open(`http://localhost:8085/${app.name}-ide/`, "_blank")}
+                    onClick={() => {
+                      const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8080";
+                      const host = window.location.hostname;
+                      window.open(`http://${host}:${traefikPort}/${app.name}-ide/`, "_blank");
+                    }}
                   >
                     <ExternalLink className="mr-2 h-4 w-4" />
                     Open Web IDE
