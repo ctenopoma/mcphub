@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw } from "lucide-react";
+import { Play, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
 
 interface AppStatus {
   name: string;
@@ -17,6 +18,8 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<{ [key: string]: string }>({});
   const [passwords, setPasswords] = useState<{ [key: string]: string }>({});
   const [loading, setLoading] = useState(false);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [newAppName, setNewAppName] = useState("");
 
   const fetchApps = async () => {
     try {
@@ -135,6 +138,24 @@ export default function Dashboard() {
     }
   };
 
+  const isDuplicate = apps.some((app) => app.name === newAppName);
+  const isCreateDisabled = !newAppName.trim() || isDuplicate || loading;
+
+  const handleCreate = async () => {
+    if (isCreateDisabled) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/create/${newAppName.trim()}`, { method: "POST" });
+      if (res.ok) {
+        setShowCreateDialog(false);
+        setNewAppName("");
+        await fetchApps();
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const copyToClipboard = (text: string) => {
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(text);
@@ -158,9 +179,15 @@ export default function Dashboard() {
             <h1 className="text-4xl font-bold tracking-tight">Manager Dashboard</h1>
             <p className="text-muted-foreground mt-2">MCP & Web IDE Container Orchestration</p>
           </div>
-          <Button onClick={fetchApps} variant="outline" size="icon">
-            <RefreshCw className="h-4 w-4" />
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={() => { setNewAppName(""); setShowCreateDialog(true); }}>
+              <Plus className="mr-2 h-4 w-4" />
+              New App
+            </Button>
+            <Button onClick={fetchApps} variant="outline" size="icon">
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -277,6 +304,53 @@ export default function Dashboard() {
           })}
         </div>
       </div>
+
+      {showCreateDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <CardTitle>Create New App</CardTitle>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setShowCreateDialog(false)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <CardDescription>Enter a name for your new application template.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Input
+                placeholder="my-new-app"
+                value={newAppName}
+                onChange={(e) => setNewAppName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleCreate();
+                  if (e.key === "Escape") setShowCreateDialog(false);
+                }}
+                autoFocus
+              />
+              {isDuplicate && (
+                <p className="text-sm text-destructive">
+                  This app name already exists.
+                </p>
+              )}
+            </CardContent>
+            <CardFooter className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowCreateDialog(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleCreate} disabled={isCreateDisabled}>
+                <Plus className="mr-2 h-4 w-4" />
+                Create
+              </Button>
+            </CardFooter>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

@@ -25,7 +25,8 @@ async fn main() {
         .route("/logs/{app_name}", get(get_logs))
         .route("/delete/{app_name}", post(delete_app))
         .route("/password/{app_name}", get(get_password))
-        .route("/password/{app_name}/reset", post(reset_password));
+        .route("/password/{app_name}/reset", post(reset_password))
+        .route("/create/{app_name}", post(create_app));
 
     let app = Router::new()
         .nest("/api", api_routes)
@@ -183,6 +184,66 @@ async fn get_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {
         }
         _ => Json(serde_json::json!({"error": "Container not running or config not found"}))
     }
+}
+
+async fn create_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+    let app_dir = format!("/apps/{}", app_name);
+
+    if std::path::Path::new(&app_dir).exists() {
+        return Json(serde_json::json!({"error": "App already exists"}));
+    }
+
+    if let Err(e) = fs::create_dir_all(&app_dir) {
+        return Json(serde_json::json!({"error": format!("Failed to create directory: {}", e)}));
+    }
+
+    let dockerfile = r#"FROM python:3.11-slim
+ENV PASSWORD=mcp-ide-pass
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://code-server.dev/install.sh | sh
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY . .
+CMD code-server --bind-addr 0.0.0.0:8000 /app & uvicorn app:app --host 0.0.0.0 --port 80 --reload
+"#;
+
+    let requirements = "fastapi\nuvicorn\npython-multipart\n";
+
+    let app_py = r#"from fastapi import FastAPI, File, UploadFile
+import shutil
+import os
+
+app = FastAPI()
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello from the new MCP App!"}
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return {"status": "success", "filename": file.filename}
+"#;
+
+    let files = [
+        ("Dockerfile", dockerfile),
+        ("requirements.txt", requirements),
+        ("app.py", app_py),
+    ];
+
+    for (name, content) in &files {
+        let path = format!("{}/{}", app_dir, name);
+        if let Err(e) = fs::write(&path, content) {
+            return Json(serde_json::json!({"error": format!("Failed to write {}: {}", name, e)}));
+        }
+    }
+
+    Json(serde_json::json!({"status": "success"}))
 }
 
 async fn reset_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {
