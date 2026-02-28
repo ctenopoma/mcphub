@@ -1,0 +1,156 @@
+use axum::{
+    extract::Path,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+use tower_http::services::{ServeDir, ServeFile};
+use std::fs;
+
+#[derive(Serialize)]
+struct AppStatus {
+    name: String,
+    status: String,
+}
+
+#[tokio::main]
+async fn main() {
+    let serve_dir = ServeDir::new("frontend/out")
+        .not_found_service(ServeFile::new("frontend/out/index.html"));
+
+    let api_routes = Router::new()
+        .route("/apps", get(list_apps))
+        .route("/deploy/{app_name}", post(deploy_app))
+        .route("/logs/{app_name}", get(get_logs))
+        .route("/delete/{app_name}", post(delete_app));
+
+    let app = Router::new()
+        .nest("/api", api_routes)
+        .fallback_service(serve_dir);
+
+    println!("Manager UI running on http://0.0.0.0:8081");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8081").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
+async fn list_apps() -> Json<Vec<AppStatus>> {
+    let mut apps = Vec::new();
+
+    // Read directories in ../apps
+    let paths = match fs::read_dir("../apps") {
+        Ok(p) => p,
+        Err(_) => return Json(apps),
+    };
+
+    let docker_ps = Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}|{{.Status}}"])
+        .output()
+        .unwrap_or_else(|_| std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+
+    let ps_output = String::from_utf8_lossy(&docker_ps.stdout);
+    let mut running_containers = std::collections::HashMap::new();
+
+    for line in ps_output.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() == 2 {
+            running_containers.insert(parts[0].to_string(), parts[1].to_string());
+        }
+    }
+
+    for path in paths {
+        if let Ok(entry) = path {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let status = running_containers
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_else(|| "Not Started".to_string());
+
+                    apps.push(AppStatus { name, status });
+                }
+            }
+        }
+    }
+
+    Json(apps)
+}
+
+async fn deploy_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+    let app_dir = format!("../apps/{}", app_name);
+
+    if !std::path::Path::new(&app_dir).exists() {
+        return Json(serde_json::json!({"error": "App directory not found"}));
+    }
+
+    // Stop and remove existing container if any
+    let _ = Command::new("docker")
+        .args(["rm", "-f", &app_name])
+        .output();
+
+    // Build image
+    let build_status = Command::new("docker")
+        .args(["build", "-t", &app_name, &app_dir])
+        .status()
+        .expect("Failed to execute docker build");
+
+    if !build_status.success() {
+        return Json(serde_json::json!({"error": "Docker build failed"}));
+    }
+
+    // Run container with Traefik labels
+    let run_status = Command::new("docker")
+        .args([
+            "run", "-d",
+            "--name", &app_name,
+            "--network", "mcp-net",
+            // Traefik labels
+            &format!("--label=traefik.enable=true"),
+            // API setup
+            &format!("--label=traefik.http.routers.{}.rule=PathPrefix(`/{}`)", app_name, app_name),
+            &format!("--label=traefik.http.routers.{}.service={}", app_name, app_name),
+            &format!("--label=traefik.http.middlewares.{}-strip.stripprefix.prefixes=/{}/, /{}", app_name, app_name, app_name),
+            &format!("--label=traefik.http.routers.{}.middlewares={}-strip", app_name, app_name),
+            &format!("--label=traefik.http.services.{}.loadbalancer.server.port=80", app_name),
+            // IDE setup
+            &format!("--label=traefik.http.routers.{}-ide.rule=PathPrefix(`/{}-ide/`)", app_name, app_name),
+            &format!("--label=traefik.http.routers.{}-ide.service={}-ide", app_name, app_name),
+            &format!("--label=traefik.http.services.{}-ide.loadbalancer.server.port=8000", app_name),
+            &app_name
+        ])
+        .status()
+        .expect("Failed to execute docker run");
+
+    if run_status.success() {
+        Json(serde_json::json!({"status": "success"}))
+    } else {
+        Json(serde_json::json!({"error": "Docker run failed"}))
+    }
+}
+
+async fn delete_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+    let status = Command::new("docker")
+        .args(["rm", "-f", &app_name])
+        .status()
+        .expect("Failed to execute docker rm");
+
+    if status.success() {
+        Json(serde_json::json!({"status": "success"}))
+    } else {
+        Json(serde_json::json!({"error": "Docker rm failed"}))
+    }
+}
+
+async fn get_logs(Path(app_name): Path<String>) -> String {
+    let output = Command::new("docker")
+        .args(["logs", "--tail", "100", &app_name])
+        .output()
+        .expect("Failed to execute docker logs");
+
+    String::from_utf8_lossy(&output.stdout).to_string() + &String::from_utf8_lossy(&output.stderr)
+}

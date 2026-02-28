@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  mcp-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager
+    container_name: mcp-manager
+    privileged: true
+    ports:
+      - "8085:8080" # Traefik port
+      - "8081:8081" # Rust UI port
+      - "8000:8000" # Python MCP SSE port
+    volumes:
+      - .:/manager-source
+      - ./apps:/apps
+    environment:
+      - DOCKER_TLS_CERTDIR=

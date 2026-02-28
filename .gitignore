@@ -1,0 +1,9 @@
+*/node_modules
+.venv
+
+debug
+release
+
+build-logs.txt
+
+__pycache__

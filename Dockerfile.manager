@@ -1,0 +1,50 @@
+# Stage 1: Next.js Frontend Builder
+FROM node:20-alpine AS frontend-builder
+WORKDIR /app
+COPY rust_ui/frontend/package*.json ./
+RUN npm install
+COPY rust_ui/frontend ./
+RUN npm run build
+
+# Stage 2: Rust Backend Builder
+FROM rust:1.85-alpine AS rust-builder
+WORKDIR /app
+RUN apk add --no-cache musl-dev
+COPY rust_ui/Cargo.toml Cargo.lock* ./
+COPY rust_ui/src ./src
+RUN cargo build --release
+
+# Stage 3: DinD Runner + Python MCP Server
+FROM docker:24.0-dind AS runner
+
+WORKDIR /manager
+
+# Install requirements: python for MCP server, bash for entrypoint
+RUN apk add --no-cache \
+    python3 \
+    py3-pip \
+    bash \
+    curl \
+    iptables \
+    ca-certificates
+
+# Install Python packages
+COPY requirements.txt .
+# Use --break-system-packages because we are in alpine container and know what we are doing
+RUN pip3 install --no-cache-dir -r requirements.txt --break-system-packages
+
+# Copy binaries and assets from previous stages
+COPY --from=frontend-builder /app/out ./frontend/out
+COPY --from=rust-builder /app/target/release/rust_ui ./manager-ui
+
+# Setup entrypoint and MCP script
+COPY entrypoint.sh .
+COPY mcp_server.py .
+RUN chmod +x entrypoint.sh
+
+# Expose ports
+# 8080: Traefik, 8081: Rust Manager UI, 8000: Python MCP Server
+EXPOSE 8080 8081 8000
+
+ENV HOST=0.0.0.0
+ENTRYPOINT ["./entrypoint.sh"]
