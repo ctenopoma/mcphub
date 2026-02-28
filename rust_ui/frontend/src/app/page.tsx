@@ -186,9 +186,12 @@ export default function Dashboard() {
     <div className="min-h-screen bg-background p-8 font-sans">
       <div className="max-w-6xl mx-auto space-y-8">
         <div className="flex justify-between items-center">
-          <div>
-            <h1 className="text-4xl font-bold tracking-tight">Manager Dashboard</h1>
-            <p className="text-muted-foreground mt-2">MCP & Web IDE Container Orchestration</p>
+          <div className="flex items-center gap-4">
+            <img src="/mcphub.png" alt="MCP HUB" className="h-14 w-14 rounded-lg object-cover" />
+            <div>
+              <h1 className="text-4xl font-bold tracking-tight">MCP HUB</h1>
+              <p className="text-muted-foreground mt-1">MCP & Web IDE Container Orchestration</p>
+            </div>
           </div>
           <div className="flex gap-2">
             <Button onClick={() => { setNewAppName(""); setShowCreateDialog(true); }}>

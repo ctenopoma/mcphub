@@ -3,8 +3,9 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
-  title: "DinD MCP Manager",
-  description: "Manage your Docker-in-Docker MCP servers",
+  title: "MCP HUB",
+  description: "MCP & Web IDE Container Orchestration",
+  icons: { icon: "/mcphub.png" },
 };
 
 export default function RootLayout({
