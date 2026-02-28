@@ -7,3 +7,5 @@ release
 build-logs.txt
 
 __pycache__
+
+apps/
