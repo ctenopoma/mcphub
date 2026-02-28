@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X } from "lucide-react";
+import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 
@@ -14,6 +14,11 @@ interface AppStatus {
 }
 
 export default function Dashboard() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+
   const [apps, setApps] = useState<AppStatus[]>([]);
   const [logs, setLogs] = useState<{ [key: string]: string }>({});
   const [passwords, setPasswords] = useState<{ [key: string]: string }>({});
@@ -21,26 +26,72 @@ export default function Dashboard() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newAppName, setNewAppName] = useState("");
 
+  const checkAuth = async () => {
+    try {
+      const res = await fetch("/api/auth/check");
+      setIsAuthenticated(res.ok);
+    } catch {
+      setIsAuthenticated(false);
+    }
+  };
+
+  const handleLogin = async () => {
+    setLoginLoading(true);
+    setLoginError("");
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: loginPassword }),
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        setIsAuthenticated(true);
+        setLoginPassword("");
+      } else {
+        setLoginError("パスワードが正しくありません");
+      }
+    } catch {
+      setLoginError("サーバーに接続できません");
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await fetch("/api/logout", { method: "POST" });
+    setIsAuthenticated(false);
+    setApps([]);
+    setLogs({});
+    setPasswords({});
+  };
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
   const fetchApps = async () => {
     try {
       const res = await fetch("/api/apps");
+      if (res.status === 401) {
+        setIsAuthenticated(false);
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setApps(data);
-      } else {
-        setApps([{ name: "myapp", status: "Not Started" }]);
       }
     } catch (e) {
-      console.error("Backend not reachable, using mock data", e);
-      setApps([{ name: "myapp", status: "Not Started" }]);
+      console.error("Backend not reachable", e);
     }
   };
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchApps();
     const interval = setInterval(fetchApps, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isAuthenticated]);
 
   const handleDeploy = async (appName: string) => {
     setLoading(true);
@@ -182,6 +233,56 @@ export default function Dashboard() {
     }
   };
 
+  // Loading state
+  if (isAuthenticated === null) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Login screen
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-8">
+        <Card className="w-full max-w-sm">
+          <CardHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <img src="/mcphub.png" alt="MCP HUB" className="h-16 w-16 rounded-lg object-cover" />
+            </div>
+            <CardTitle className="text-2xl">MCP HUB</CardTitle>
+            <CardDescription>管理画面にアクセスするにはパスワードを入力してください</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="password"
+                placeholder="パスワード"
+                className="pl-10"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleLogin();
+                }}
+                autoFocus
+              />
+            </div>
+            {loginError && (
+              <p className="text-sm text-destructive">{loginError}</p>
+            )}
+            <Button className="w-full" onClick={handleLogin} disabled={loginLoading || !loginPassword}>
+              {loginLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Lock className="mr-2 h-4 w-4" />}
+              ログイン
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Dashboard
   return (
     <div className="min-h-screen bg-background p-8 font-sans">
       <div className="max-w-6xl mx-auto space-y-8">
@@ -200,6 +301,9 @@ export default function Dashboard() {
             </Button>
             <Button onClick={fetchApps} variant="outline" size="icon">
               <RefreshCw className="h-4 w-4" />
+            </Button>
+            <Button onClick={handleLogout} variant="outline" size="icon" title="ログアウト">
+              <LogOut className="h-4 w-4" />
             </Button>
           </div>
         </div>

@@ -18,6 +18,7 @@ services:
       - TRAEFIK_PORT=${TRAEFIK_PORT:-8080}
       - UI_PORT=${UI_PORT:-8081}
       - MCP_PORT=${MCP_PORT:-8000}
+      - MANAGER_PASSWORD=${MANAGER_PASSWORD:-mcp-hub-password}
     volumes:
       - ./apps:/apps
       - docker-data:/var/lib/docker

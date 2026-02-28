@@ -44,9 +44,10 @@ docker run -d \
 
 UI_PORT="${UI_PORT:-8081}"
 MCP_PORT="${MCP_PORT:-8000}"
+MANAGER_PASSWORD="${MANAGER_PASSWORD:-mcp-hub-password}"
 
 echo "Starting Rust Management UI on port ${UI_PORT}..."
-HOST=0.0.0.0 UI_PORT="${UI_PORT}" /manager/manager-ui &
+HOST=0.0.0.0 UI_PORT="${UI_PORT}" MANAGER_PASSWORD="${MANAGER_PASSWORD}" /manager/manager-ui &
 
 echo "Starting Python MCP Server on port ${MCP_PORT}..."
 MCP_PORT="${MCP_PORT}" python3 mcp_server.py
