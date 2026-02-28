@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X } from "lucide-react";
+import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 
@@ -52,7 +52,18 @@ export default function Dashboard() {
     }
   };
 
+  const handleStop = async (appName: string) => {
+    setLoading(true);
+    try {
+      await fetch(`/api/stop/${appName}`, { method: "POST" });
+      await fetchApps();
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleDelete = async (appName: string) => {
+    if (!confirm(`「${appName}」を完全に削除しますか？\nコンテナとアプリディレクトリが削除されます。`)) return;
     setLoading(true);
     try {
       await fetch(`/api/delete/${appName}`, { method: "POST" });
@@ -218,10 +229,19 @@ export default function Dashboard() {
                       {isUp ? "Restart" : "Deploy"}
                     </Button>
                     <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => handleStop(app.name)}
+                      disabled={loading || !isUp}
+                    >
+                      <Square className="mr-2 h-4 w-4" />
+                      Stop
+                    </Button>
+                    <Button
                       variant="destructive"
                       size="sm"
                       onClick={() => handleDelete(app.name)}
-                      disabled={loading || app.status === "Not Started"}
+                      disabled={loading}
                     >
                       <Trash2 className="mr-2 h-4 w-4" />
                       Delete

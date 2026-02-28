@@ -23,6 +23,7 @@ async fn main() {
         .route("/apps", get(list_apps))
         .route("/deploy/{app_name}", post(deploy_app))
         .route("/logs/{app_name}", get(get_logs))
+        .route("/stop/{app_name}", post(stop_app))
         .route("/delete/{app_name}", post(delete_app))
         .route("/password/{app_name}", get(get_password))
         .route("/password/{app_name}/reset", post(reset_password))
@@ -144,17 +145,32 @@ async fn deploy_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
     }
 }
 
-async fn delete_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+async fn stop_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
     let status = Command::new("docker")
         .args(["rm", "-f", &app_name])
-        .status()
-        .expect("Failed to execute docker rm");
+        .status();
 
-    if status.success() {
-        Json(serde_json::json!({"status": "success"}))
-    } else {
-        Json(serde_json::json!({"error": "Docker rm failed"}))
+    match status {
+        Ok(s) if s.success() => Json(serde_json::json!({"status": "success"})),
+        _ => Json(serde_json::json!({"error": "Failed to stop container"}))
     }
+}
+
+async fn delete_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+    // Stop and remove container (ignore errors if not running)
+    let _ = Command::new("docker")
+        .args(["rm", "-f", &app_name])
+        .status();
+
+    // Remove app directory
+    let app_dir = format!("/apps/{}", app_name);
+    if std::path::Path::new(&app_dir).exists() {
+        if let Err(e) = fs::remove_dir_all(&app_dir) {
+            return Json(serde_json::json!({"error": format!("Failed to remove directory: {}", e)}));
+        }
+    }
+
+    Json(serde_json::json!({"status": "success"}))
 }
 
 async fn get_logs(Path(app_name): Path<String>) -> String {
