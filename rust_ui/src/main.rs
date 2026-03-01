@@ -377,11 +377,21 @@ async fn get_jwks(
     );
     let resp = reqwest::get(&url)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            eprintln!("JWKS fetch failed for tenant {}: {}", tenant_id, e);
+            StatusCode::UNAUTHORIZED
+        })?;
+    if !resp.status().is_success() {
+        eprintln!("JWKS endpoint returned {} for tenant {}", resp.status(), tenant_id);
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let jwks: jsonwebtoken::jwk::JwkSet = resp
         .json()
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            eprintln!("JWKS parse failed for tenant {}: {}", tenant_id, e);
+            StatusCode::UNAUTHORIZED
+        })?;
 
     // Update cache
     {
