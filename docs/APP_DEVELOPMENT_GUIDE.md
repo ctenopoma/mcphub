@@ -7,8 +7,9 @@
 3. [FastAPI によるアプリ開発](#3-fastapi-によるアプリ開発)
 4. [MCP（API）の仕組みと使い方](#4-mcpapiの仕組みと使い方)
 5. [開発ワークフロー](#5-開発ワークフロー)
-6. [実践例：独自 API の追加](#6-実践例独自-api-の追加)
-7. [トラブルシューティング](#7-トラブルシューティング)
+6. [API 認証（ForwardAuth）](#6-api-認証forwardauth)
+7. [実践例：独自 API の追加](#7-実践例独自-api-の追加)
+8. [トラブルシューティング](#8-トラブルシューティング)
 
 ---
 
@@ -257,8 +258,9 @@ MCP (Model Context Protocol) は、LLM（Claude 等）が外部ツールを呼�
       ↓
 2. MCP サーバーが 15 秒ごとにポーリング
       ↓
-3. Traefik 経由で /openapi.json を取得
-   GET http://localhost:8080/<アプリ名>/openapi.json
+3. コンテナに直接アクセスして /openapi.json を取得
+   GET http://<コンテナIP>:80/openapi.json
+   ※ Traefik を経由しないため ForwardAuth の影響を受けない
       ↓
 4. OpenAPI スキーマからエンドポイントを解析
       ↓
@@ -497,7 +499,136 @@ python test_client.py
 
 ---
 
-## 6. 実践例：独自 API の追加
+## 6. API 認証（ForwardAuth）
+
+MCP HUB では、アプリの API エンドポイントに対してインフラ層（Traefik + Rust バックエンド）で一元的にアクセス制御を行えます。アプリ側（FastAPI）に認証ロジックを実装する必要はありません。
+
+### 6.1 認証方式
+
+管理画面の各アプリカードにある「Auth」ボタンから、以下の 3 種類の認証方式を選択できます。
+
+| 方式 | 説明 | ユースケース |
+|------|------|-------------|
+| **認証なし (None)** | デフォルト。誰でもアクセス可能 | 開発中、内部専用 API |
+| **API Key** | 静的キーによる認証。リクエストに `X-API-Key` ヘッダーが必要 | 外部サービス連携、シンプルなアクセス制御 |
+| **Microsoft Entra ID** | JWT トークンによる認証。Azure AD で発行されたトークンを検証 | 企業環境、SSO 連携 |
+
+### 6.2 認証の仕組み（ForwardAuth パターン）
+
+```
+クライアント → Traefik → ForwardAuth (Rust /api/verify) → 認証 OK → 子コンテナ
+                                                          → 認証 NG → 401 Unauthorized
+```
+
+1. クライアントが `http://<host>:8085/myapp/endpoint` にリクエスト
+2. Traefik が Rust サーバーの `/api/verify` に事前問い合わせ（ForwardAuth）
+3. Rust サーバーが `/apps/auth_config.json` から該当アプリの認証設定を参照
+4. 認証方式に応じてヘッダーを検証
+5. 認証成功 → `X-Forwarded-User` ヘッダー付きで子コンテナにリクエスト転送
+6. 認証失敗 → `401 Unauthorized` を返す（子コンテナには到達しない）
+
+**注意:**
+- **IDE（code-server）には ForwardAuth は適用されません。** IDE は独自のパスワード認証を使用します。
+- **MCP サーバーは Traefik を経由せずコンテナに直接アクセスするため、認証の影響を受けません。**
+
+### 6.3 API Key 認証の設定と使用
+
+#### 設定手順
+
+1. 管理画面でアプリカードの「Auth」ボタンをクリック
+2. 認証方式を「API Key」に変更
+3. API キーを入力（またはシャッフルアイコンでランダム生成）
+4. 「Save」で保存 → **設定は即座に反映されます**
+
+#### API キーを使ったアクセス
+
+```bash
+# API キーなし → 401 Unauthorized（レスポンスボディなし）
+curl http://<host>:8085/myapp/
+
+# API キーあり → 正常レスポンス
+curl -H "X-API-Key: your-secret-key-here" http://<host>:8085/myapp/
+# {"message": "Hello from MyApp!"}
+
+# POST リクエスト + API キー
+curl -X POST http://<host>:8085/myapp/items \
+  -H "X-API-Key: your-secret-key-here" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Widget", "price": 9.99}'
+
+# ファイルアップロード + API キー
+curl -X POST http://<host>:8085/myapp/upload \
+  -H "X-API-Key: your-secret-key-here" \
+  -F "file=@test.txt"
+```
+
+### 6.4 Entra ID (JWT) 認証の設定と使用
+
+#### 設定手順
+
+1. Azure Portal で App Registration を作成し、Tenant ID と Client ID（Application ID）を取得
+2. 管理画面でアプリカードの「Auth」ボタンをクリック
+3. 認証方式を「Microsoft Entra ID (JWT)」に変更
+4. Tenant ID と Client ID を入力
+5. 「Save」で保存
+
+#### JWT トークンを使ったアクセス
+
+```bash
+# Azure AD からアクセストークンを取得（例: Client Credentials フロー）
+TOKEN=$(curl -s -X POST \
+  "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token" \
+  -d "client_id=<client-id>&scope=<client-id>/.default&client_secret=<secret>&grant_type=client_credentials" \
+  | jq -r '.access_token')
+
+# Bearer トークン付きでアクセス
+curl -H "Authorization: Bearer $TOKEN" http://<host>:8085/myapp/
+```
+
+### 6.5 アプリ側での認証ユーザー情報の取得
+
+認証を通過したリクエストには、Rust サーバーが `X-Forwarded-User` ヘッダーを付与します。アプリ側でこのヘッダーを参照することで、認証済みユーザーの情報を取得できます。
+
+```python
+from fastapi import FastAPI, Request
+
+app = FastAPI()
+
+@app.get("/whoami")
+def whoami(request: Request):
+    """認証済みユーザーの情報を返す"""
+    user = request.headers.get("X-Forwarded-User", "anonymous")
+    return {"user": user}
+```
+
+| 認証方式 | `X-Forwarded-User` の値 |
+|----------|------------------------|
+| 認証なし | `anonymous` |
+| API Key | `api-key-user` |
+| Entra ID | JWT の `preferred_username` / `upn` / `sub` |
+
+### 6.6 認証設定の管理 API
+
+プログラムから認証設定を操作することもできます（管理画面の Cookie 認証が必要）。
+
+```bash
+# 認証設定の取得
+curl -b cookies.txt http://<host>:8081/api/apps/myapp/auth
+
+# API Key を設定
+curl -b cookies.txt -X POST http://<host>:8081/api/apps/myapp/auth \
+  -H "Content-Type: application/json" \
+  -d '{"auth_type": "api_key", "api_key": "my-secret-key"}'
+
+# 認証を無効化
+curl -b cookies.txt -X POST http://<host>:8081/api/apps/myapp/auth \
+  -H "Content-Type: application/json" \
+  -d '{"auth_type": "none"}'
+```
+
+---
+
+## 7. 実践例：独自 API の追加
 
 ### 例 1: メモ帳 API
 
@@ -651,12 +782,13 @@ async def analyze_csv(file: UploadFile = File(...)):
 
 ---
 
-## 7. トラブルシューティング
+## 8. トラブルシューティング
 
 ### API にアクセスできない
 
 | 症状 | 原因 | 対処法 |
 |------|------|--------|
+| 401 Unauthorized | 認証が設定されている | `X-API-Key` または `Authorization: Bearer` ヘッダーを付与 |
 | 404 Not Found | コンテナが起動していない | 管理画面で「Deploy」ボタンを押す |
 | 502 Bad Gateway | コンテナ内の FastAPI がまだ起動中 | 数秒待ってリトライ |
 | 接続拒否 | Traefik ポートが違う | `.env` の `TRAEFIK_PORT` を確認 |

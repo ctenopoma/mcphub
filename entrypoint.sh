@@ -46,8 +46,12 @@ UI_PORT="${UI_PORT:-8081}"
 MCP_PORT="${MCP_PORT:-8000}"
 MANAGER_PASSWORD="${MANAGER_PASSWORD:-mcp-hub-password}"
 
+# Detect DinD bridge gateway IP (how Traefik containers reach this host)
+MANAGER_IP=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || echo "172.17.0.1")
+echo "Detected MANAGER_IP: ${MANAGER_IP}"
+
 echo "Starting Rust Management UI on port ${UI_PORT}..."
-HOST=0.0.0.0 UI_PORT="${UI_PORT}" MANAGER_PASSWORD="${MANAGER_PASSWORD}" /manager/manager-ui &
+HOST=0.0.0.0 UI_PORT="${UI_PORT}" MANAGER_PASSWORD="${MANAGER_PASSWORD}" MANAGER_IP="${MANAGER_IP}" /manager/manager-ui &
 
 echo "Starting Python MCP Server on port ${MCP_PORT}..."
 MCP_PORT="${MCP_PORT}" python3 mcp_server.py

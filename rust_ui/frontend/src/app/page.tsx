@@ -4,13 +4,21 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock } from "lucide-react";
+import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 
 interface AppStatus {
   name: string;
   status: string;
+  auth_type: string;
+}
+
+interface AuthConfig {
+  auth_type: "none" | "api_key" | "entra_id";
+  api_key?: string;
+  tenant_id?: string;
+  client_id?: string;
 }
 
 export default function Dashboard() {
@@ -25,6 +33,11 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newAppName, setNewAppName] = useState("");
+
+  // Auth settings modal
+  const [showAuthDialog, setShowAuthDialog] = useState<string | null>(null);
+  const [authConfig, setAuthConfig] = useState<AuthConfig>({ auth_type: "none" });
+  const [authLoading, setAuthLoading] = useState(false);
 
   const checkAuth = async () => {
     try {
@@ -136,7 +149,6 @@ export default function Dashboard() {
 
   const toggleLogs = async (appName: string) => {
     if (logs[appName]) {
-      // Toggle off
       setLogs((prev) => {
         const newLogs = { ...prev };
         delete newLogs[appName];
@@ -161,7 +173,6 @@ export default function Dashboard() {
 
   const togglePassword = async (appName: string) => {
     if (passwords[appName]) {
-      // Toggle off
       setPasswords((prev) => {
         const p = { ...prev };
         delete p[appName];
@@ -230,6 +241,71 @@ export default function Dashboard() {
       textarea.select();
       document.execCommand("copy");
       document.body.removeChild(textarea);
+    }
+  };
+
+  // Auth settings modal handlers
+  const openAuthDialog = async (appName: string) => {
+    setShowAuthDialog(appName);
+    setAuthLoading(true);
+    try {
+      const res = await fetch(`/api/apps/${appName}/auth`);
+      if (res.ok) {
+        const data = await res.json();
+        const auth = data.auth;
+        setAuthConfig({
+          auth_type: auth.auth_type || "none",
+          api_key: auth.api_key || "",
+          tenant_id: auth.tenant_id || "",
+          client_id: auth.client_id || "",
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const generateRandomKey = () => {
+    const array = new Uint8Array(24);
+    crypto.getRandomValues(array);
+    const key = Array.from(array, (b) => b.toString(16).padStart(2, "0")).join("");
+    setAuthConfig({ ...authConfig, api_key: key });
+  };
+
+  const saveAuthConfig = async () => {
+    if (!showAuthDialog) return;
+    setAuthLoading(true);
+    try {
+      const body: Record<string, unknown> = { auth_type: authConfig.auth_type };
+      if (authConfig.auth_type === "api_key") {
+        body.api_key = authConfig.api_key;
+      } else if (authConfig.auth_type === "entra_id") {
+        body.tenant_id = authConfig.tenant_id;
+        body.client_id = authConfig.client_id;
+      }
+      const res = await fetch(`/api/apps/${showAuthDialog}/auth`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        setShowAuthDialog(null);
+        await fetchApps();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const authLabel = (type: string) => {
+    switch (type) {
+      case "api_key": return "API Key";
+      case "entra_id": return "Entra ID";
+      default: return null;
     }
   };
 
@@ -311,6 +387,7 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {apps.map((app) => {
             const isUp = app.status.startsWith("Up");
+            const authBadge = authLabel(app.auth_type);
             return (
               <Card key={app.name} className="flex flex-col transition-all hover:shadow-md border-border">
                 <CardHeader>
@@ -319,9 +396,17 @@ export default function Dashboard() {
                       <CardTitle className="text-xl">{app.name}</CardTitle>
                       <CardDescription>Container App</CardDescription>
                     </div>
-                    <Badge variant={isUp ? "default" : "secondary"}>
-                      {isUp ? "Running" : app.status}
-                    </Badge>
+                    <div className="flex gap-1">
+                      {authBadge && (
+                        <Badge variant="outline">
+                          <Shield className="mr-1 h-3 w-3" />
+                          {authBadge}
+                        </Badge>
+                      )}
+                      <Badge variant={isUp ? "default" : "secondary"}>
+                        {isUp ? "Running" : app.status}
+                      </Badge>
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent className="flex-grow space-y-4">
@@ -369,6 +454,14 @@ export default function Dashboard() {
                     >
                       <Key className="mr-2 h-4 w-4" />
                       Password
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => openAuthDialog(app.name)}
+                    >
+                      <Shield className="mr-2 h-4 w-4" />
+                      Auth
                     </Button>
                   </div>
 
@@ -432,6 +525,7 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Create App Dialog */}
       {showCreateDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
           <Card className="w-full max-w-md">
@@ -473,6 +567,100 @@ export default function Dashboard() {
               <Button onClick={handleCreate} disabled={isCreateDisabled}>
                 <Plus className="mr-2 h-4 w-4" />
                 Create
+              </Button>
+            </CardFooter>
+          </Card>
+        </div>
+      )}
+
+      {/* Auth Settings Dialog */}
+      {showAuthDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <CardTitle>
+                  <Shield className="inline mr-2 h-5 w-5" />
+                  Auth Settings: {showAuthDialog}
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setShowAuthDialog(null)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <CardDescription>API の認証方式を設定します。設定は即座に反映されます。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-2 block">認証方式</label>
+                <select
+                  className="w-full h-9 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={authConfig.auth_type}
+                  onChange={(e) => setAuthConfig({ ...authConfig, auth_type: e.target.value as AuthConfig["auth_type"] })}
+                >
+                  <option value="none">認証なし (Public)</option>
+                  <option value="api_key">API Key</option>
+                  <option value="entra_id">Microsoft Entra ID (JWT)</option>
+                </select>
+              </div>
+
+              {authConfig.auth_type === "api_key" && (
+                <div>
+                  <label className="text-sm font-medium mb-2 block">API Key</label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={authConfig.api_key || ""}
+                      onChange={(e) => setAuthConfig({ ...authConfig, api_key: e.target.value })}
+                      placeholder="APIキーを入力"
+                      className="flex-1"
+                    />
+                    <Button variant="outline" size="icon" onClick={generateRandomKey} title="ランダム生成">
+                      <Shuffle className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => authConfig.api_key && copyToClipboard(authConfig.api_key)}
+                      title="コピー"
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {authConfig.auth_type === "entra_id" && (
+                <>
+                  <div>
+                    <label className="text-sm font-medium mb-2 block">Tenant ID</label>
+                    <Input
+                      value={authConfig.tenant_id || ""}
+                      onChange={(e) => setAuthConfig({ ...authConfig, tenant_id: e.target.value })}
+                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium mb-2 block">Client ID (Application ID)</label>
+                    <Input
+                      value={authConfig.client_id || ""}
+                      onChange={(e) => setAuthConfig({ ...authConfig, client_id: e.target.value })}
+                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                    />
+                  </div>
+                </>
+              )}
+            </CardContent>
+            <CardFooter className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowAuthDialog(null)}>
+                Cancel
+              </Button>
+              <Button onClick={saveAuthConfig} disabled={authLoading}>
+                {authLoading && <RefreshCw className="mr-2 h-4 w-4 animate-spin" />}
+                Save
               </Button>
             </CardFooter>
           </Card>

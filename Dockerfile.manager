@@ -7,7 +7,7 @@ COPY rust_ui/frontend ./
 RUN npm run build
 
 # Stage 2: Rust Backend Builder
-FROM rust:1.85-alpine AS rust-builder
+FROM rust:1.88-alpine AS rust-builder
 WORKDIR /app
 RUN apk add --no-cache musl-dev
 COPY rust_ui/Cargo.toml Cargo.lock* ./
