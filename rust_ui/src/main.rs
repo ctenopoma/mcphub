@@ -483,7 +483,8 @@ async fn deploy_app(
 
     // Build image
     let build_status = Command::new("docker")
-        .args(["build", "-t", &app_name, &app_dir])
+        .env("DOCKER_BUILDKIT", "0")
+        .args(["build", "--network", "host", "-t", &app_name, &app_dir])
         .status()
         .expect("Failed to execute docker build");
 
