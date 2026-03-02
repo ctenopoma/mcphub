@@ -2,15 +2,19 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{sse::{Event, Sse}, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::process::Command;
 use std::sync::{Arc, RwLock};
+use tokio::io::AsyncBufReadExt;
+use tokio::process::Command as TokioCommand;
+use tokio_stream::wrappers::ReceiverStream;
 use tower_http::services::{ServeDir, ServeFile};
 use std::fs;
 
@@ -129,6 +133,7 @@ async fn main() {
         .route("/apps", get(list_apps))
         .route("/apps/{app_name}/auth", get(get_auth_config).post(set_auth_config))
         .route("/deploy/{app_name}", post(deploy_app))
+        .route("/rebuild/{app_name}", get(rebuild_app))
         .route("/logs/{app_name}", get(get_logs))
         .route("/stop/{app_name}", post(stop_app))
         .route("/delete/{app_name}", post(delete_app))
@@ -595,6 +600,136 @@ async fn get_logs(Path(app_name): Path<String>) -> String {
         .expect("Failed to execute docker logs");
 
     String::from_utf8_lossy(&output.stdout).to_string() + &String::from_utf8_lossy(&output.stderr)
+}
+
+async fn rebuild_app(
+    State(state): State<Arc<AppState>>,
+    Path(app_name): Path<String>,
+) -> impl IntoResponse {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(256);
+    let manager_ip = state.manager_ip.clone();
+
+    tokio::spawn(async move {
+        let app_dir = format!("/apps/{}", app_name);
+
+        // Start docker build with plain progress output for streaming
+        let build_result = TokioCommand::new("docker")
+            .args(["build", "--progress=plain", "-t", &app_name, &app_dir])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+
+        let mut child = match build_result {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(Ok(Event::default().data(format!("Error starting build: {}", e)))).await;
+                let _ = tx.send(Ok(Event::default().event("done").data("failed"))).await;
+                return;
+            }
+        };
+
+        let stderr = child.stderr.take();
+        let stdout = child.stdout.take();
+
+        // Stream stderr (main docker build output with --progress=plain)
+        let tx_stderr = tx.clone();
+        let stderr_handle = tokio::spawn(async move {
+            if let Some(stderr) = stderr {
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if tx_stderr.send(Ok(Event::default().data(line))).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Stream stdout as well
+        let tx_stdout = tx.clone();
+        let stdout_handle = tokio::spawn(async move {
+            if let Some(stdout) = stdout {
+                let mut lines = tokio::io::BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if tx_stdout.send(Ok(Event::default().data(line))).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Wait for both stream tasks to finish (pipes close when child exits)
+        let _ = tokio::join!(stderr_handle, stdout_handle);
+
+        let exit_status = child.wait().await;
+        match exit_status {
+            Ok(status) if status.success() => {
+                let _ = tx.send(Ok(Event::default().data(
+                    "✓ Build successful. Starting container...".to_string()
+                ))).await;
+
+                // Stop existing container (ignore errors — may not be running)
+                let _ = TokioCommand::new("docker")
+                    .args(["rm", "-f", &app_name])
+                    .output()
+                    .await;
+
+                // Build docker run args (mirrors deploy_app)
+                let mut args: Vec<String> = vec![
+                    "run".into(), "-d".into(),
+                    "--name".into(), app_name.clone(),
+                    "--network".into(), "mcp-net".into(),
+                    "-v".into(), format!("/apps/{}:/app", app_name),
+                    "-e".into(), format!("APP_NAME={}", app_name),
+                ];
+                args.push("--label=traefik.enable=true".into());
+                args.push(format!("--label=traefik.http.routers.{}.rule=PathPrefix(`/{}`)", app_name, app_name));
+                args.push(format!("--label=traefik.http.routers.{}.service={}", app_name, app_name));
+                args.push(format!("--label=traefik.http.middlewares.{}-strip.stripprefix.prefixes=/{}/, /{}", app_name, app_name, app_name));
+                args.push(format!("--label=traefik.http.services.{}.loadbalancer.server.port=80", app_name));
+                args.push(format!("--label=traefik.http.middlewares.{}-auth.forwardauth.address=http://{}:8081/api/verify", app_name, manager_ip));
+                args.push(format!("--label=traefik.http.middlewares.{}-auth.forwardauth.authRequestHeaders=X-API-Key,Authorization", app_name));
+                args.push(format!("--label=traefik.http.middlewares.{}-auth.forwardauth.authResponseHeaders=X-Forwarded-User", app_name));
+                args.push(format!("--label=traefik.http.routers.{}.middlewares={}-auth,{}-strip", app_name, app_name, app_name));
+                args.push(format!("--label=traefik.http.routers.{}-ide.rule=PathPrefix(`/{}-ide`)", app_name, app_name));
+                args.push(format!("--label=traefik.http.routers.{}-ide.service={}-ide", app_name, app_name));
+                args.push(format!("--label=traefik.http.middlewares.{}-ide-strip.stripprefix.prefixes=/{}-ide", app_name, app_name));
+                args.push(format!("--label=traefik.http.routers.{}-ide.middlewares={}-ide-strip", app_name, app_name));
+                args.push(format!("--label=traefik.http.services.{}-ide.loadbalancer.server.port=8000", app_name));
+                args.push(app_name.clone());
+
+                let run_result = TokioCommand::new("docker")
+                    .args(&args)
+                    .output()
+                    .await;
+
+                match run_result {
+                    Ok(o) if o.status.success() => {
+                        let _ = tx.send(Ok(Event::default().data("✓ Container started successfully".to_string()))).await;
+                        let _ = tx.send(Ok(Event::default().event("done").data("success"))).await;
+                    }
+                    Ok(o) => {
+                        let err = String::from_utf8_lossy(&o.stderr);
+                        let _ = tx.send(Ok(Event::default().data(format!("✗ Container start failed: {}", err)))).await;
+                        let _ = tx.send(Ok(Event::default().event("done").data("failed"))).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Ok(Event::default().data(format!("✗ Container start error: {}", e)))).await;
+                        let _ = tx.send(Ok(Event::default().event("done").data("failed"))).await;
+                    }
+                }
+            }
+            Ok(_) => {
+                let _ = tx.send(Ok(Event::default().event("done").data("failed"))).await;
+            }
+            Err(e) => {
+                let _ = tx.send(Ok(Event::default().data(format!("✗ Build process error: {}", e)))).await;
+                let _ = tx.send(Ok(Event::default().event("done").data("failed"))).await;
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx))
+        .keep_alive(axum::response::sse::KeepAlive::default())
 }
 
 async fn get_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {

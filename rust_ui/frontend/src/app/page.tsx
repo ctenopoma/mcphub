@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle } from "lucide-react";
+import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle, Hammer } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 
@@ -38,6 +38,66 @@ export default function Dashboard() {
   const [showAuthDialog, setShowAuthDialog] = useState<string | null>(null);
   const [authConfig, setAuthConfig] = useState<AuthConfig>({ auth_type: "none" });
   const [authLoading, setAuthLoading] = useState(false);
+
+  // Rebuild terminal
+  const [rebuildState, setRebuildState] = useState<{
+    appName: string;
+    logs: string[];
+    status: "building" | "success" | "failed";
+  } | null>(null);
+  const buildLogRef = useRef<HTMLDivElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Auto-scroll rebuild terminal to bottom on each new log line
+  useEffect(() => {
+    if (buildLogRef.current) {
+      buildLogRef.current.scrollTop = buildLogRef.current.scrollHeight;
+    }
+  }, [rebuildState]);
+
+  const closeRebuildModal = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    setRebuildState(null);
+  };
+
+  const startRebuild = (appName: string) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+    setRebuildState({ appName, logs: [], status: "building" });
+
+    const es = new EventSource(`/api/rebuild/${appName}`);
+    eventSourceRef.current = es;
+
+    es.onmessage = (e) => {
+      setRebuildState((prev) =>
+        prev ? { ...prev, logs: [...prev.logs, e.data] } : null
+      );
+    };
+
+    es.addEventListener("done", (e: Event) => {
+      const success = (e as MessageEvent).data === "success";
+      setRebuildState((prev) =>
+        prev ? { ...prev, status: success ? "success" : "failed" } : null
+      );
+      es.close();
+      eventSourceRef.current = null;
+      fetchApps();
+    });
+
+    es.onerror = () => {
+      setRebuildState((prev) =>
+        prev
+          ? { ...prev, status: "failed", logs: [...prev.logs, "Connection error"] }
+          : null
+      );
+      es.close();
+      eventSourceRef.current = null;
+    };
+  };
 
   const checkAuth = async () => {
     try {
@@ -504,9 +564,9 @@ export default function Dashboard() {
                     </div>
                   )}
                 </CardContent>
-                <CardFooter className="pt-4 border-t border-border">
+                <CardFooter className="pt-4 border-t border-border flex gap-2">
                   <Button
-                    className="w-full font-semibold"
+                    className="flex-1 font-semibold"
                     variant="default"
                     disabled={!isUp}
                     onClick={() => {
@@ -517,6 +577,18 @@ export default function Dashboard() {
                   >
                     <ExternalLink className="mr-2 h-4 w-4" />
                     Open Web IDE
+                  </Button>
+                  <Button
+                    className="flex-1"
+                    variant="outline"
+                    onClick={() => startRebuild(app.name)}
+                    disabled={
+                      rebuildState?.appName === app.name &&
+                      rebuildState.status === "building"
+                    }
+                  >
+                    <Hammer className="mr-2 h-4 w-4" />
+                    Rebuild
                   </Button>
                 </CardFooter>
               </Card>
@@ -661,6 +733,99 @@ export default function Dashboard() {
               <Button onClick={saveAuthConfig} disabled={authLoading}>
                 {authLoading && <RefreshCw className="mr-2 h-4 w-4 animate-spin" />}
                 Save
+              </Button>
+            </CardFooter>
+          </Card>
+        </div>
+      )}
+      {/* Rebuild Terminal Overlay */}
+      {rebuildState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <Card className="w-full max-w-3xl flex flex-col" style={{ height: "80vh" }}>
+            <CardHeader className="flex-none">
+              <div className="flex justify-between items-center">
+                <CardTitle className="flex items-center gap-2">
+                  <Hammer className="h-5 w-5" />
+                  Rebuild: {rebuildState.appName}
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  {rebuildState.status === "building" && (
+                    <Badge variant="secondary">
+                      <RefreshCw className="mr-1 h-3 w-3 animate-spin" />
+                      Building...
+                    </Badge>
+                  )}
+                  {rebuildState.status === "success" && (
+                    <Badge className="bg-green-600 text-white">Success</Badge>
+                  )}
+                  {rebuildState.status === "failed" && (
+                    <Badge variant="destructive">Failed</Badge>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={closeRebuildModal}
+                    disabled={rebuildState.status === "building"}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              <CardDescription>
+                {rebuildState.status === "building"
+                  ? "Dockerイメージをビルド中です..."
+                  : rebuildState.status === "success"
+                  ? "ビルドが成功しました。コンテナを再起動しました。"
+                  : "ビルドに失敗しました。ログを確認してIDEで修正してください。"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex-1 min-h-0 pb-0">
+              <div
+                ref={buildLogRef}
+                className="h-full rounded-md bg-black text-green-400 font-mono text-xs p-4 overflow-y-auto"
+              >
+                {rebuildState.logs.length === 0 && rebuildState.status === "building" && (
+                  <span className="text-gray-500">Waiting for build output...</span>
+                )}
+                {rebuildState.logs.map((line, i) => (
+                  <div key={i} className="whitespace-pre-wrap break-all leading-5">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+            <CardFooter className="flex-none flex justify-end gap-2 pt-4">
+              {rebuildState.status === "success" && (
+                <Button
+                  onClick={() => {
+                    const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8085";
+                    const host = window.location.hostname;
+                    window.open(
+                      `http://${host}:${traefikPort}/${rebuildState.appName}-ide/`,
+                      "_blank"
+                    );
+                  }}
+                >
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  Open Web IDE
+                </Button>
+              )}
+              {rebuildState.status === "failed" && (
+                <Button
+                  variant="outline"
+                  onClick={() => startRebuild(rebuildState.appName)}
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Retry
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                onClick={closeRebuildModal}
+                disabled={rebuildState.status === "building"}
+              >
+                Close
               </Button>
             </CardFooter>
           </Card>
