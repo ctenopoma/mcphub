@@ -2,75 +2,72 @@
 
 <img src="rust_ui/frontend/public/mcphub.png" alt="MCP Hub Logo" width="200">
 
-# 🐳 DinD MCP Hub
+# DinD MCP Hub
 
-**Docker-in-Docker ベースのコンテナオーケストレーションシステム**
+**Docker-in-Docker ベースのコンテナオーケストレーション & MCP ツール自動登録プラットフォーム**
 
-子コンテナのデプロイ・管理・Web IDE アクセスを提供し、FastAPI の OpenAPI スキーマから MCP ツールを自動登録します。
+子コンテナのデプロイ・管理・Web IDE・認証設定を Web UI から一元管理し、
+FastAPI の OpenAPI スキーマから MCP ツールを自動登録します。
 
 [![Docker](https://img.shields.io/badge/Docker-24.0--dind-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://www.docker.com/)
-[![Rust](https://img.shields.io/badge/Rust-Axum-DEA584?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-Axum_0.8-DEA584?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/Python-FastMCP-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![Next.js](https://img.shields.io/badge/Next.js-shadcn/ui-000000?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org/)
+[![Next.js](https://img.shields.io/badge/Next.js_16-shadcn/ui-000000?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![Traefik](https://img.shields.io/badge/Traefik-v3.0-24A1C1?style=for-the-badge&logo=traefikproxy&logoColor=white)](https://traefik.io/)
 
 </div>
 
 ---
 
-## 📐 アーキテクチャ
+## アーキテクチャ
 
 ```
 Host
-└── mcp-manager (docker:24.0-dind, privileged)
+├── :8081  管理 UI (Rust/Axum + Next.js 静的エクスポート)
+├── :8085  Traefik リバースプロキシ → 子コンテナ API / IDE / ダッシュボード
+└── :8000  MCP SSE サーバー (Python/FastMCP → Claude 連携)
+
+└── mcp-manager コンテナ (docker:24.0-dind, privileged)
     ├── dockerd (内部 Docker デーモン)
-    │   ├── traefik:v3.0 (リバースプロキシ :8080)
-    │   └── myapp (子コンテナ on mcp-net)
-    │       ├── code-server (:8000 → Web IDE)
-    │       └── uvicorn/FastAPI (:80 → API)
-    ├── manager-ui (Rust/Axum)
-    └── mcp_server.py (FastMCP SSE)
+    │   └── mcp-net (内部ブリッジネットワーク)
+    │       ├── traefik:v3.0 (Docker + File プロバイダー)
+    │       └── <app> (子コンテナ)
+    │           ├── uvicorn / FastAPI  :80   → REST API
+    │           └── code-server        :8000 → Web IDE
+    ├── manager-ui  (Rust/Axum バイナリ :8081)
+    └── mcp_server.py (FastMCP SSE :8000)
 ```
 
 ---
 
-## ⚡ クイックスタート
+## クイックスタート
 
-### 📋 前提条件
+### 前提条件
 
-| 必要ツール | バージョン |
-|:----------:|:----------:|
-| ![Docker](https://img.shields.io/badge/-Docker-2496ED?style=flat-square&logo=docker&logoColor=white) | 最新推奨 |
-| ![Docker Compose](https://img.shields.io/badge/-Docker_Compose-2496ED?style=flat-square&logo=docker&logoColor=white) | v2+ |
+- Docker (v28 推奨。v29 は WSL2 環境でポートフォワーディングの問題あり)
+- Docker Compose v2+
 
-### ⚙️ 設定
+### 設定
 
-`.env` ファイルで IP・ポートを設定します:
+`.env` ファイルでポート・パスワードを設定します:
 
 ```env
-# バインドアドレス (0.0.0.0 = 全インターフェース, 127.0.0.1 = ローカルのみ)
-BIND_HOST=0.0.0.0
-
-# Traefik リバースプロキシポート
-TRAEFIK_PORT=8085
-
-# 管理UI ポート
-UI_PORT=8081
-
-# MCP SSE サーバーポート
-MCP_PORT=8000
+BIND_HOST=0.0.0.0          # バインドアドレス (127.0.0.1 = ローカルのみ)
+TRAEFIK_PORT=8085           # Traefik リバースプロキシポート
+UI_PORT=8081                # 管理 UI ポート
+MCP_PORT=8000               # MCP SSE サーバーポート
+MANAGER_PASSWORD=mcp-hub-password  # 管理画面のログインパスワード
 ```
 
-### 🚀 起動
+### 起動
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-> [!NOTE]
-> 初回ビルドには数分かかります（Rust コンパイル + Traefik イメージ取得）。
+> **Note:** 初回ビルドには数分かかります (Rust コンパイル + npm ビルド + Traefik イメージ取得)。
 
-### 🛑 停止
+### 停止
 
 ```bash
 docker compose down
@@ -78,52 +75,51 @@ docker compose down
 
 ---
 
-## 🎯 使い方
+## 使い方
 
-### 1️⃣ 管理UIからデプロイ
+### 1. 管理 UI にログイン
 
-ブラウザで `http://<HOST>:<UI_PORT>` を開き、アプリカードの **Deploy** ボタンをクリックします。
+ブラウザで `http://<HOST>:8081` を開き、`MANAGER_PASSWORD` でログインします。
 
-### 2️⃣ APIからデプロイ
+### 2. アプリの作成・デプロイ
 
-```bash
-# 🚀 デプロイ
-curl -X POST http://<HOST>:8081/api/deploy/myapp
+1. **New App** ボタン → アプリ名を入力 → **Create**
+   - `apps/<name>/` に Dockerfile、app.py、requirements.txt がスキャフォールドされます
+2. アプリカードの **Deploy** ボタンをクリック
+   - Docker イメージをビルドし、Traefik ラベル付きでコンテナを起動します
 
-# 📋 一覧
-curl http://<HOST>:8081/api/apps
+### 3. アプリへのアクセス (Traefik 経由)
 
-# 📄 ログ
-curl http://<HOST>:8081/api/logs/myapp
+デプロイ後、Traefik 経由で以下の URL にアクセスできます:
 
-# 🗑️ 削除
-curl -X POST http://<HOST>:8081/api/delete/myapp
-```
+| URL パターン | 説明 |
+|:---|:---|
+| `http://<HOST>:8085/<app>/` | FastAPI REST API (ForwardAuth による認証あり) |
+| `http://<HOST>:8085/<app>-ide/` | Web IDE (code-server、独自パスワード認証) |
+| `http://<HOST>:8085/<app>-dashboard/` | アプリダッシュボード (IDE / Rebuild / App リンク) |
 
-### 3️⃣ 子コンテナへのアクセス
+### 4. アプリダッシュボード
 
-デプロイ後、Traefik 経由で子コンテナにアクセスできます:
+管理 UI のカードから **Open Dashboard** をクリックすると、アプリ専用のダッシュボードが開きます。
 
-| 用途 | URL | 説明 |
-|:----:|:---:|:----:|
-| ![FastAPI](https://img.shields.io/badge/-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white) | `http://<HOST>:<TRAEFIK_PORT>/myapp/` | API エンドポイント |
-| ![VS Code](https://img.shields.io/badge/-Web_IDE-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white) | `http://<HOST>:<TRAEFIK_PORT>/myapp-ide/` | ブラウザ IDE |
+- **パスワード認証**: code-server のパスワードでログイン (管理画面の Password ボタンで確認可能)
+- **Open Web IDE**: ブラウザ上の VS Code (code-server) を起動
+- **Rebuild**: アプリの Docker イメージを再ビルドし、ログをターミナルにリアルタイム表示
+- **Open App**: FastAPI の API エンドポイントを開く
 
-> [!TIP]
-> Web IDE のパスワードはコンテナログで確認できます。
+### 5. MCP サーバー連携
 
-### 4️⃣ MCP サーバー連携
-
-MCP SSE サーバーは子コンテナの OpenAPI スキーマを **15秒ごと** にポーリングし、ツールとして自動登録します。
+MCP SSE サーバーは子コンテナの OpenAPI スキーマを **15 秒ごと** にポーリングし、ツールとして自動登録します。
+コンテナの内部 IP に直接アクセスするため、ForwardAuth は適用されません。
 
 <details>
-<summary>📎 Claude Desktop 等の設定例</summary>
+<summary>Claude Desktop / Claude Code の設定例</summary>
 
 ```json
 {
   "mcpServers": {
     "dind-hub": {
-      "url": "http://<HOST>:<MCP_PORT>/sse"
+      "url": "http://<HOST>:8000/sse"
     }
   }
 }
@@ -131,91 +127,149 @@ MCP SSE サーバーは子コンテナの OpenAPI スキーマを **15秒ごと*
 
 </details>
 
+### 6. 認証設定 (Per-App)
+
+管理 UI の各アプリカードにある **Auth** ボタンから、API エンドポイントの認証方式を切り替えられます。
+再デプロイ不要で、ライブで切り替わります。
+
+| 認証方式 | 説明 |
+|:---|:---|
+| **None** | 認証なし (`X-Forwarded-User: anonymous` が付与される) |
+| **API Key** | `X-API-Key` ヘッダーで認証 (ランダムキー生成機能付き) |
+| **Entra ID** | Microsoft Entra ID (旧 Azure AD) の RS256 JWT Bearer トークンで認証 |
+
 ---
 
-## ➕ 新しいアプリの追加
+## 管理 API
 
-`apps/` に新しいディレクトリを作成して Dockerfile と FastAPI アプリを置き、再ビルドします:
+管理 UI と同じエンドポイントを API から直接利用できます (要 Cookie 認証):
 
 ```bash
-cp -r apps/myapp apps/newapp
-# apps/newapp/app.py を編集
-docker compose build
-docker compose up -d
+# アプリ一覧
+curl http://<HOST>:8081/api/apps
+
+# アプリ作成
+curl -X POST http://<HOST>:8081/api/create/newapp
+
+# デプロイ
 curl -X POST http://<HOST>:8081/api/deploy/newapp
+
+# ログ取得
+curl http://<HOST>:8081/api/logs/newapp
+
+# 停止
+curl -X POST http://<HOST>:8081/api/stop/newapp
+
+# 削除
+curl -X POST http://<HOST>:8081/api/delete/newapp
 ```
 
 ---
 
-## 📁 プロジェクト構成
+## プロジェクト構成
 
 ```
 McpHub/
-├── 📄 .env                      # IP・ポート設定
-├── 🐳 docker-compose.yml        # DinD サービス定義
-├── 🐳 Dockerfile.manager        # マルチステージビルド
-├── 🔧 entrypoint.sh             # 内部サービス起動スクリプト
-├── 🐍 mcp_server.py             # FastMCP 動的ツール登録
-├── 📋 requirements.txt          # Python 依存関係
-├── 📂 apps/
-│   └── 📂 myapp/                # 子コンテナテンプレート
-│       ├── 🐳 Dockerfile
-│       ├── 🐍 app.py
-│       └── 📋 requirements.txt
-└── 📂 rust_ui/
-    ├── 📦 Cargo.toml
-    ├── 🦀 src/main.rs           # Axum バックエンド
-    └── 📂 frontend/             # Next.js + shadcn/ui
+├── .env                        ポート・パスワード設定
+├── docker-compose.yml          DinD サービス定義
+├── Dockerfile.manager          マルチステージビルド (Node → Rust → DinD)
+├── entrypoint.sh               dockerd / Traefik / manager-ui / MCP 起動
+├── mcp_server.py               FastMCP 動的ツール登録 (SSE)
+├── requirements.txt            Python 依存関係
+├── apps/
+│   └── myapp/                  子コンテナテンプレート
+│       ├── Dockerfile          Ubuntu 22.04 + code-server + Python
+│       ├── app.py              FastAPI サンプル
+│       └── requirements.txt
+├── rust_ui/
+│   ├── Cargo.toml
+│   ├── src/main.rs             Axum バックエンド (認証・デプロイ・SSE)
+│   └── frontend/               Next.js 16 + shadcn/ui + Tailwind CSS 4
+│       ├── package.json
+│       └── src/app/page.tsx    管理画面メイン
+└── docs/
+    └── spec.md                 仕様書
 ```
 
 ---
 
-## 🔧 トラブルシューティング
+## 起動シーケンス
+
+`entrypoint.sh` は以下の順序で内部サービスを起動します:
+
+1. `iptables -P FORWARD ACCEPT` — DinD ネットワーク転送を許可
+2. `/etc/docker/daemon.json` を生成 (DNS: 8.8.8.8, MTU: 1400, overlay2)
+3. `dockerd` をバックグラウンドで起動、最大 30 秒待機
+4. `docker network create mcp-net` — 内部ネットワークを作成
+5. Traefik 動的設定 (`dynamic.yml`) を生成 — ダッシュボード・API プロキシルート
+6. Traefik コンテナを `mcp-net` 上で起動 (Docker Provider + File Provider)
+7. Rust `manager-ui` をバックグラウンドで起動 (`:8081`)
+8. Python `mcp_server.py` をフォアグラウンドで起動 (`:8000`)
+
+---
+
+## 技術スタック
+
+| レイヤー | 技術 |
+|:---|:---|
+| コンテナ基盤 | Docker-in-Docker (`docker:24.0-dind`) |
+| リバースプロキシ | Traefik v3.0 (Docker Provider + File Provider) |
+| バックエンド | Rust / Axum 0.8 (Cookie セッション認証) |
+| フロントエンド | Next.js 16 / React 19 / shadcn/ui / Tailwind CSS 4 (静的エクスポート) |
+| MCP サーバー | Python / FastMCP (SSE) |
+| 子コンテナ | Ubuntu 22.04 / code-server / uvicorn |
+| 認証 | パスワード / API Key / Microsoft Entra ID (JWT RS256) |
+
+---
+
+## トラブルシューティング
 
 <details>
-<summary>❌ <code>error getting credentials</code> でビルドが失敗する</summary>
+<summary><code>error getting credentials</code> でビルドが失敗する</summary>
 
 ホスト側の Docker クレデンシャルヘルパーの問題です。
 
-**![Linux](https://img.shields.io/badge/-Linux-FCC624?style=flat-square&logo=linux&logoColor=black) / ![macOS](https://img.shields.io/badge/-macOS-000000?style=flat-square&logo=apple&logoColor=white):**
+**Linux / macOS:**
 
 ```bash
 mkdir -p ~/.docker
 echo '{"credsStore":""}' > ~/.docker/config.json
 ```
 
-**![Windows](https://img.shields.io/badge/-Windows-0078D6?style=flat-square&logo=windows&logoColor=white) (PowerShell):**
+**Windows (PowerShell):**
 
 ```powershell
 [System.IO.File]::WriteAllText("$env:USERPROFILE\.docker\config.json", '{"credsStore":""}')
 ```
 
-> [!WARNING]
 > Windows では `echo` や `>` でファイルを作ると BOM が付いて Docker がパースに失敗します。必ず上記の `WriteAllText` を使ってください。
 
-その後 `docker compose build` を再実行してください。
+</details>
+
+<details>
+<summary><code>parent snapshot does not exist</code> でビルドが失敗する</summary>
+
+Docker のビルドキャッシュが壊れています。以下でクリーンアップしてください:
+
+```bash
+docker builder prune -f
+docker compose build
+```
+
+</details>
+
+<details>
+<summary>Docker v29 でポートに接続できない (Connection reset by peer)</summary>
+
+Docker v29 の `docker-proxy -use-listen-fd` が WSL2 環境で正しく動作しない場合があります。
+Docker v28 へのダウングレードを推奨します。
 
 </details>
 
 ---
 
-## 🏗️ 技術スタック
-
-| レイヤー | 技術 | バッジ |
-|:--------:|:----:|:------:|
-| コンテナ基盤 | Docker-in-Docker | ![Docker](https://img.shields.io/badge/docker:24.0--dind-2496ED?style=flat-square&logo=docker&logoColor=white) |
-| リバースプロキシ | Traefik v3.0 | ![Traefik](https://img.shields.io/badge/Traefik_v3.0-24A1C1?style=flat-square&logo=traefikproxy&logoColor=white) |
-| バックエンド | Rust / Axum | ![Rust](https://img.shields.io/badge/Rust%2FAxum-DEA584?style=flat-square&logo=rust&logoColor=white) |
-| フロントエンド | Next.js / shadcn/ui | ![Next.js](https://img.shields.io/badge/Next.js-000000?style=flat-square&logo=next.js&logoColor=white) |
-| MCP サーバー | Python / FastMCP | ![Python](https://img.shields.io/badge/FastMCP-3776AB?style=flat-square&logo=python&logoColor=white) |
-| 子コンテナ | Ubuntu / code-server | ![Ubuntu](https://img.shields.io/badge/Ubuntu_22.04-E95420?style=flat-square&logo=ubuntu&logoColor=white) |
-
----
-
 <div align="center">
 
-**Made with ❤️ by DinD MCP Hub Team**
-
-[![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+**Made with Rust, Python, and Docker by DinD MCP Hub Team**
 
 </div>
