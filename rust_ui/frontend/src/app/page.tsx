@@ -520,7 +520,6 @@ export default function Dashboard() {
                       variant={passwords[app.name] ? "default" : "secondary"}
                       size="sm"
                       onClick={() => togglePassword(app.name)}
-                      disabled={!isUp}
                     >
                       <Key className="mr-2 h-4 w-4" />
                       Password
@@ -582,11 +581,11 @@ export default function Dashboard() {
                     onClick={() => {
                       const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8085";
                       const host = window.location.hostname;
-                      window.open(`http://${host}:${traefikPort}/${app.name}-ide/`, "_blank");
+                      window.open(`http://${host}:${traefikPort}/${app.name}-dashboard/`, "_blank");
                     }}
                   >
                     <ExternalLink className="mr-2 h-4 w-4" />
-                    Open Web IDE
+                    Open Dashboard
                   </Button>
                   <Button
                     className="flex-1"

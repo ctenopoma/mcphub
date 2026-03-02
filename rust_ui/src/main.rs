@@ -133,7 +133,6 @@ async fn main() {
         .route("/apps", get(list_apps))
         .route("/apps/{app_name}/auth", get(get_auth_config).post(set_auth_config))
         .route("/deploy/{app_name}", post(deploy_app))
-        .route("/rebuild/{app_name}", get(rebuild_app))
         .route("/logs/{app_name}", get(get_logs))
         .route("/stop/{app_name}", post(stop_app))
         .route("/delete/{app_name}", post(delete_app))
@@ -147,7 +146,10 @@ async fn main() {
         .route("/login", post(login))
         .route("/auth/check", get(auth_check))
         .route("/logout", post(logout))
-        .route("/verify", get(verify_forward_auth));
+        .route("/verify", get(verify_forward_auth))
+        .route("/app-dashboard/{app_name}", get(app_dashboard))
+        .route("/rebuild/{app_name}", get(rebuild_app))
+        .route("/verify-password/{app_name}", post(verify_app_password));
 
     let api_routes = Router::new()
         .merge(protected_routes)
@@ -696,6 +698,7 @@ async fn rebuild_app(
                 args.push(format!("--label=traefik.http.middlewares.{}-ide-strip.stripprefix.prefixes=/{}-ide", app_name, app_name));
                 args.push(format!("--label=traefik.http.routers.{}-ide.middlewares={}-ide-strip", app_name, app_name));
                 args.push(format!("--label=traefik.http.services.{}-ide.loadbalancer.server.port=8000", app_name));
+
                 args.push(app_name.clone());
 
                 let run_result = TokioCommand::new("docker")
@@ -810,6 +813,214 @@ async def upload_file(file: UploadFile = File(...)):
     }
 
     Json(serde_json::json!({"status": "success"}))
+}
+
+async fn app_dashboard(
+    State(state): State<Arc<AppState>>,
+    Path(app_name): Path<String>,
+) -> axum::response::Html<String> {
+    let _manager_ip = &state.manager_ip;
+    let html = format!(r##"<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{app_name} - Dashboard</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0a0a0b;color:#e4e4e7;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}}
+.card{{background:#18181b;border:1px solid #27272a;border-radius:12px;padding:2rem;max-width:800px;width:100%}}
+h1{{font-size:1.5rem;margin-bottom:.25rem}}
+.subtitle{{color:#71717a;font-size:.875rem;margin-bottom:1.5rem}}
+.buttons{{display:flex;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap}}
+.btn{{display:inline-flex;align-items:center;gap:.5rem;padding:.625rem 1.25rem;border-radius:8px;border:none;font-size:.875rem;font-weight:500;cursor:pointer;text-decoration:none;transition:background .15s}}
+.btn-primary{{background:#2563eb;color:#fff}}.btn-primary:hover{{background:#1d4ed8}}
+.btn-outline{{background:transparent;color:#e4e4e7;border:1px solid #3f3f46}}.btn-outline:hover{{background:#27272a}}
+.btn-secondary{{background:#27272a;color:#e4e4e7;border:1px solid #3f3f46}}.btn-secondary:hover{{background:#3f3f46}}
+.btn:disabled{{opacity:.5;cursor:not-allowed}}
+.terminal{{background:#000;border:1px solid #27272a;border-radius:8px;padding:1rem;margin-top:1rem;height:50vh;overflow-y:auto;font-family:"Fira Code","Cascadia Code",monospace;font-size:.75rem;line-height:1.6;color:#4ade80}}
+.terminal .line{{white-space:pre-wrap;word-break:break-all}}
+.status{{display:inline-block;padding:.25rem .75rem;border-radius:9999px;font-size:.75rem;font-weight:500;margin-left:.75rem}}
+.status-idle{{background:#27272a;color:#a1a1aa}}
+.status-building{{background:#854d0e;color:#fef08a;animation:pulse 1.5s infinite}}
+.status-success{{background:#166534;color:#bbf7d0}}
+.status-failed{{background:#991b1b;color:#fecaca}}
+@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.7}}}}
+.footer{{display:flex;justify-content:space-between;align-items:center;margin-top:1rem}}
+.back-link{{color:#71717a;font-size:.875rem;text-decoration:none}}.back-link:hover{{color:#a1a1aa}}
+.terminal-header{{display:flex;justify-content:space-between;align-items:center;margin-top:1rem;margin-bottom:.5rem}}
+.terminal-title{{font-size:.75rem;color:#71717a;text-transform:uppercase;letter-spacing:.05em}}
+.login-card{{background:#18181b;border:1px solid #27272a;border-radius:12px;padding:2rem;max-width:400px;width:100%;text-align:center}}
+.login-card h1{{margin-bottom:.5rem}}
+.login-card p{{color:#71717a;font-size:.875rem;margin-bottom:1.5rem}}
+.input{{width:100%;padding:.625rem 1rem;border-radius:8px;border:1px solid #3f3f46;background:#27272a;color:#e4e4e7;font-size:.875rem;margin-bottom:.75rem;outline:none}}
+.input:focus{{border-color:#2563eb}}
+.error{{color:#f87171;font-size:.8rem;margin-bottom:.75rem;display:none}}
+</style>
+</head>
+<body>
+<!-- Login Screen -->
+<div id="loginScreen" class="login-card">
+<h1>{app_name}</h1>
+<p>IDE パスワードを入力してください</p>
+<input type="password" id="passwordInput" class="input" placeholder="Password" autofocus>
+<div id="loginError" class="error">パスワードが正しくありません</div>
+<button class="btn btn-primary" style="width:100%" onclick="doLogin()">ログイン</button>
+</div>
+
+<!-- Dashboard Screen (hidden until login) -->
+<div id="dashboardScreen" class="card" style="display:none">
+<h1>{app_name}<span id="status" class="status status-idle">Idle</span></h1>
+<p class="subtitle">Container App Dashboard</p>
+<div class="buttons">
+<a class="btn btn-primary" id="ideLink" href="/{app_name}-ide/" target="_blank">Open Web IDE</a>
+<button class="btn btn-outline" id="rebuildBtn" onclick="startRebuild()">Rebuild</button>
+<a class="btn btn-secondary" href="/{app_name}/" target="_blank">Open App</a>
+</div>
+<div class="terminal-header">
+<span class="terminal-title">Build Output</span>
+<span id="lineCount" style="font-size:.7rem;color:#52525b"></span>
+</div>
+<div id="terminal" class="terminal">
+<div style="color:#6b7280;font-style:italic">Rebuild ボタンを押すとビルドログがここに表示されます...</div>
+</div>
+<div class="footer">
+<a class="back-link" href="/">← 管理画面に戻る</a>
+</div>
+</div>
+
+<script>
+const APP_NAME = "{app_name}";
+const API_PREFIX = window.location.port === "8081" ? "/api" : "/manager-api/api";
+let lineNum = 0;
+let idePassword = "";
+
+// Check if already logged in (session)
+if (sessionStorage.getItem("dash_auth_" + APP_NAME)) {{
+  showDashboard();
+}}
+
+document.getElementById("passwordInput").addEventListener("keydown", function(e) {{
+  if (e.key === "Enter") doLogin();
+}});
+
+function doLogin() {{
+  const pw = document.getElementById("passwordInput").value;
+  if (!pw) return;
+
+  fetch(API_PREFIX + "/verify-password/" + APP_NAME, {{
+    method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{password: pw}})
+  }})
+    .then(r => r.json())
+    .then(data => {{
+      if (data.ok) {{
+        idePassword = pw;
+        sessionStorage.setItem("dash_auth_" + APP_NAME, "1");
+        showDashboard();
+      }} else {{
+        document.getElementById("loginError").style.display = "block";
+        document.getElementById("loginError").textContent = data.error || "パスワードが正しくありません";
+      }}
+    }})
+    .catch(() => {{
+      document.getElementById("loginError").style.display = "block";
+      document.getElementById("loginError").textContent = "サーバーに接続できません";
+    }});
+}}
+
+function showDashboard() {{
+  document.getElementById("loginScreen").style.display = "none";
+  document.getElementById("dashboardScreen").style.display = "block";
+}}
+
+function startRebuild() {{
+  const btn = document.getElementById("rebuildBtn");
+  const terminal = document.getElementById("terminal");
+  const status = document.getElementById("status");
+  const lineCount = document.getElementById("lineCount");
+  btn.disabled = true;
+  terminal.innerHTML = "";
+  lineNum = 0;
+  lineCount.textContent = "";
+  status.className = "status status-building";
+  status.textContent = "Building...";
+
+  const es = new EventSource(API_PREFIX + "/rebuild/" + APP_NAME);
+  es.onmessage = function(e) {{
+    lineNum++;
+    const line = document.createElement("div");
+    line.className = "line";
+    line.textContent = e.data;
+    terminal.appendChild(line);
+    terminal.scrollTop = terminal.scrollHeight;
+    lineCount.textContent = lineNum + " lines";
+  }};
+  es.addEventListener("done", function(e) {{
+    const success = e.data === "success";
+    status.className = success ? "status status-success" : "status status-failed";
+    status.textContent = success ? "Success" : "Failed";
+    btn.disabled = false;
+    es.close();
+    if (success) {{
+      const msg = document.createElement("div");
+      msg.className = "line";
+      msg.style.color = "#4ade80";
+      msg.style.fontWeight = "bold";
+      msg.style.marginTop = "0.5rem";
+      msg.textContent = "=== Build completed successfully. Container restarted. ===";
+      terminal.appendChild(msg);
+      terminal.scrollTop = terminal.scrollHeight;
+    }}
+  }});
+  es.onerror = function() {{
+    status.className = "status status-failed";
+    status.textContent = "Connection Error";
+    btn.disabled = false;
+    es.close();
+    const msg = document.createElement("div");
+    msg.className = "line";
+    msg.style.color = "#f87171";
+    msg.textContent = "=== Connection lost. Check if the server is running. ===";
+    terminal.appendChild(msg);
+  }};
+}}
+</script>
+</body>
+</html>"##, app_name = app_name);
+    axum::response::Html(html)
+}
+
+async fn verify_app_password(
+    Path(app_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let input_pw = body.get("password").and_then(|v| v.as_str()).unwrap_or("");
+    if input_pw.is_empty() {
+        return Json(serde_json::json!({"ok": false, "error": "Password required"}));
+    }
+
+    let output = Command::new("docker")
+        .args(["exec", &app_name, "cat", "/root/.config/code-server/config.yaml"])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let config = String::from_utf8_lossy(&o.stdout);
+            let password = config
+                .lines()
+                .find(|l| l.starts_with("password:"))
+                .map(|l| l.trim_start_matches("password:").trim().to_string())
+                .unwrap_or_default();
+            if password == input_pw {
+                Json(serde_json::json!({"ok": true}))
+            } else {
+                Json(serde_json::json!({"ok": false, "error": "Invalid password"}))
+            }
+        }
+        _ => Json(serde_json::json!({"ok": false, "error": "Container not running"})),
+    }
 }
 
 async fn reset_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {

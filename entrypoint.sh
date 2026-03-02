@@ -30,18 +30,6 @@ done
 echo "Creating internal Docker network..."
 docker network create mcp-net || true
 
-echo "Starting Traefik..."
-docker rm -f traefik 2>/dev/null || true
-docker run -d \
-  --name traefik \
-  --network mcp-net \
-  -p 8080:80 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  traefik:v3.0 \
-  --api.insecure=true \
-  --providers.docker=true \
-  --providers.docker.exposedbydefault=false
-
 UI_PORT="${UI_PORT:-8081}"
 MCP_PORT="${MCP_PORT:-8000}"
 MANAGER_PASSWORD="${MANAGER_PASSWORD:-mcp-hub-password}"
@@ -49,6 +37,52 @@ MANAGER_PASSWORD="${MANAGER_PASSWORD:-mcp-hub-password}"
 # Detect DinD bridge gateway IP (how Traefik containers reach this host)
 MANAGER_IP=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || echo "172.17.0.1")
 echo "Detected MANAGER_IP: ${MANAGER_IP}"
+
+# Generate Traefik dynamic config for dashboard proxy (routes to manager UI outside DinD)
+mkdir -p /manager/traefik
+cat > /manager/traefik/dynamic.yml <<DYNEOF
+http:
+  routers:
+    manager-dashboard:
+      rule: "PathRegexp(\`^/[a-zA-Z0-9_-]+-dashboard\`)"
+      service: manager-ui
+      middlewares:
+        - dash-rewrite
+    manager-api:
+      rule: "PathPrefix(\`/manager-api\`)"
+      service: manager-ui
+      middlewares:
+        - api-strip
+  middlewares:
+    dash-rewrite:
+      replacePathRegex:
+        regex: "^/([a-zA-Z0-9_-]+)-dashboard.*"
+        replacement: "/api/app-dashboard/\${1}"
+    api-strip:
+      stripPrefix:
+        prefixes:
+          - "/manager-api"
+  services:
+    manager-ui:
+      loadBalancer:
+        servers:
+          - url: "http://${MANAGER_IP}:${UI_PORT}"
+DYNEOF
+
+echo "Starting Traefik..."
+docker rm -f traefik 2>/dev/null || true
+docker run -d \
+  --name traefik \
+  --network mcp-net \
+  -p 8080:80 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /manager/traefik:/etc/traefik/dynamic:ro \
+  traefik:v3.0 \
+  --api.insecure=true \
+  --providers.docker=true \
+  --providers.docker.exposedbydefault=false \
+  --providers.file.directory=/etc/traefik/dynamic \
+  --providers.file.watch=true
 
 echo "Starting Rust Management UI on port ${UI_PORT}..."
 HOST=0.0.0.0 UI_PORT="${UI_PORT}" MANAGER_PASSWORD="${MANAGER_PASSWORD}" MANAGER_IP="${MANAGER_IP}" /manager/manager-ui &
