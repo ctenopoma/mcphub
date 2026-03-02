@@ -3,6 +3,7 @@
 
 debug
 release
+rust_ui/target/
 
 build-logs.txt
 
