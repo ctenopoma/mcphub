@@ -30,7 +30,8 @@ export default function Dashboard() {
   const [apps, setApps] = useState<AppStatus[]>([]);
   const [logs, setLogs] = useState<{ [key: string]: string }>({});
   const [passwords, setPasswords] = useState<{ [key: string]: string }>({});
-  const [loading, setLoading] = useState(false);
+  const [loadingApps, setLoadingApps] = useState<Set<string>>(new Set());
+  const [createLoading, setCreateLoading] = useState(false);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [newAppName, setNewAppName] = useState("");
 
@@ -166,29 +167,38 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [isAuthenticated]);
 
+  const setAppLoading = (appName: string, isLoading: boolean) => {
+    setLoadingApps((prev) => {
+      const next = new Set(prev);
+      if (isLoading) next.add(appName);
+      else next.delete(appName);
+      return next;
+    });
+  };
+
   const handleDeploy = async (appName: string) => {
-    setLoading(true);
+    setAppLoading(appName, true);
     try {
       await fetch(`/api/deploy/${appName}`, { method: "POST" });
       await fetchApps();
     } finally {
-      setLoading(false);
+      setAppLoading(appName, false);
     }
   };
 
   const handleStop = async (appName: string) => {
-    setLoading(true);
+    setAppLoading(appName, true);
     try {
       await fetch(`/api/stop/${appName}`, { method: "POST" });
       await fetchApps();
     } finally {
-      setLoading(false);
+      setAppLoading(appName, false);
     }
   };
 
   const handleDelete = async (appName: string) => {
     if (!confirm(`「${appName}」を完全に削除しますか？\nコンテナとアプリディレクトリが削除されます。`)) return;
-    setLoading(true);
+    setAppLoading(appName, true);
     try {
       await fetch(`/api/delete/${appName}`, { method: "POST" });
       await fetchApps();
@@ -203,7 +213,7 @@ export default function Dashboard() {
         return p;
       });
     } finally {
-      setLoading(false);
+      setAppLoading(appName, false);
     }
   };
 
@@ -272,11 +282,11 @@ export default function Dashboard() {
   };
 
   const isDuplicate = apps.some((app) => app.name === newAppName);
-  const isCreateDisabled = !newAppName.trim() || isDuplicate || loading;
+  const isCreateDisabled = !newAppName.trim() || isDuplicate || createLoading;
 
   const handleCreate = async () => {
     if (isCreateDisabled) return;
-    setLoading(true);
+    setCreateLoading(true);
     try {
       const res = await fetch(`/api/create/${newAppName.trim()}`, { method: "POST" });
       if (res.ok) {
@@ -285,7 +295,7 @@ export default function Dashboard() {
         await fetchApps();
       }
     } finally {
-      setLoading(false);
+      setCreateLoading(false);
     }
   };
 
@@ -475,16 +485,16 @@ export default function Dashboard() {
                       variant={isUp ? "outline" : "default"}
                       size="sm"
                       onClick={() => handleDeploy(app.name)}
-                      disabled={loading}
+                      disabled={loadingApps.has(app.name)}
                     >
-                      {isUp ? <RefreshCw className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
+                      {loadingApps.has(app.name) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : isUp ? <RefreshCw className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
                       {isUp ? "Restart" : "Deploy"}
                     </Button>
                     <Button
                       variant="secondary"
                       size="sm"
                       onClick={() => handleStop(app.name)}
-                      disabled={loading || !isUp}
+                      disabled={loadingApps.has(app.name) || !isUp}
                     >
                       <Square className="mr-2 h-4 w-4" />
                       Stop
@@ -493,7 +503,7 @@ export default function Dashboard() {
                       variant="destructive"
                       size="sm"
                       onClick={() => handleDelete(app.name)}
-                      disabled={loading}
+                      disabled={loadingApps.has(app.name)}
                     >
                       <Trash2 className="mr-2 h-4 w-4" />
                       Delete
