@@ -149,7 +149,8 @@ async fn main() {
         .route("/verify", get(verify_forward_auth))
         .route("/app-dashboard/{app_name}", get(app_dashboard))
         .route("/rebuild/{app_name}", get(rebuild_app))
-        .route("/verify-password/{app_name}", post(verify_app_password));
+        .route("/verify-password/{app_name}", post(verify_app_password))
+        .route("/password/{app_name}/set", post(set_password));
 
     let api_routes = Router::new()
         .merge(protected_routes)
@@ -750,23 +751,84 @@ async fn rebuild_app(
         .keep_alive(axum::response::sse::KeepAlive::default())
 }
 
-async fn get_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {
-    let output = Command::new("docker")
-        .args(["exec", &app_name, "cat", "/root/.config/code-server/config.yaml"])
-        .output();
+// ── Password helpers ──
 
-    match output {
-        Ok(o) if o.status.success() => {
-            let config = String::from_utf8_lossy(&o.stdout);
-            let password = config
-                .lines()
-                .find(|l| l.starts_with("password:"))
-                .map(|l| l.trim_start_matches("password:").trim().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            Json(serde_json::json!({"password": password}))
-        }
-        _ => Json(serde_json::json!({"error": "Container not running or config not found"}))
+fn read_cs_config(app_name: &str) -> Option<String> {
+    let path = format!("/apps/.code-server/{}/config.yaml", app_name);
+    fs::read_to_string(path).ok()
+}
+
+fn update_cs_config_password(app_name: &str, password_line: &str) -> bool {
+    let path = format!("/apps/.code-server/{}/config.yaml", app_name);
+    let config = match fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let filtered: Vec<&str> = config.lines()
+        .filter(|l| !l.starts_with("password:") && !l.starts_with("hashed-password:"))
+        .collect();
+
+    let new_config = filtered.join("\n") + "\n" + password_line + "\n";
+    fs::write(&path, new_config).is_ok()
+}
+
+fn restart_code_server(app_name: &str) {
+    let _ = Command::new("docker")
+        .args(["exec", app_name, "pkill", "-f", "code-server"])
+        .status();
+    let _ = Command::new("docker")
+        .args(["exec", "-d", app_name, "sh", "-c",
+            &format!("code-server --auth password --bind-addr 0.0.0.0:8000 --abs-proxy-base-path /{}-ide /app", app_name)])
+        .status();
+}
+
+fn hash_password_argon2(password: &str) -> Result<String, String> {
+    use argon2::{Argon2, Algorithm, Version, Params};
+    use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
+
+    let params = Params::new(4096, 3, 1, None).map_err(|e| e.to_string())?;
+    let argon2 = Argon2::new(Algorithm::Argon2i, Version::V0x13, params);
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = argon2.hash_password(password.as_bytes(), &salt)
+        .map_err(|e| e.to_string())?;
+    Ok(hash.to_string())
+}
+
+fn verify_password_argon2(password: &str, hash_str: &str) -> bool {
+    use argon2::{Argon2, Algorithm, Version, Params};
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+
+    let parsed = match PasswordHash::new(hash_str) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    let params = Params::new(4096, 3, 1, None).unwrap();
+    let argon2 = Argon2::new(Algorithm::Argon2i, Version::V0x13, params);
+    argon2.verify_password(password.as_bytes(), &parsed).is_ok()
+}
+
+// ── Password endpoints ──
+
+async fn get_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {
+    let config = match read_cs_config(&app_name) {
+        Some(c) => c,
+        None => return Json(serde_json::json!({"error": "Config not found"})),
+    };
+
+    // If user has set a custom hashed password, don't reveal it
+    if config.lines().any(|l| l.starts_with("hashed-password:")) {
+        return Json(serde_json::json!({"is_custom": true}));
     }
+
+    // Return plaintext password (auto-generated or admin-reset)
+    let password = config
+        .lines()
+        .find(|l| l.starts_with("password:"))
+        .map(|l| l.trim_start_matches("password:").trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Json(serde_json::json!({"password": password}))
 }
 
 async fn create_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
@@ -898,6 +960,20 @@ h1{{font-size:1.5rem;margin-bottom:.25rem}}
 <div id="terminal" class="terminal">
 <div style="color:#6b7280;font-style:italic">Rebuild ボタンを押すとビルドログがここに表示されます...</div>
 </div>
+<div style="margin-top:1rem;border-top:1px solid #27272a;padding-top:1rem">
+<div style="display:flex;align-items:center;justify-content:space-between">
+<span style="font-size:.875rem;color:#a1a1aa">パスワード設定</span>
+<button class="btn btn-outline" style="padding:.375rem .75rem;font-size:.75rem" onclick="togglePwForm()">変更</button>
+</div>
+<div id="pwForm" style="display:none;margin-top:.75rem">
+<input type="password" id="currentPw" class="input" placeholder="現在のパスワード">
+<input type="password" id="newPw" class="input" placeholder="新しいパスワード">
+<input type="password" id="confirmPw" class="input" placeholder="新しいパスワード（確認）">
+<div id="pwError" class="error"></div>
+<div id="pwSuccess" style="color:#4ade80;font-size:.8rem;margin-bottom:.75rem;display:none"></div>
+<button class="btn btn-primary" style="font-size:.8rem" onclick="changePw()">変更する</button>
+</div>
+</div>
 <div class="footer">
 <a class="back-link" href="/">← 管理画面に戻る</a>
 </div>
@@ -947,6 +1023,45 @@ function doLogin() {{
 function showDashboard() {{
   document.getElementById("loginScreen").style.display = "none";
   document.getElementById("dashboardScreen").style.display = "block";
+}}
+
+function togglePwForm() {{
+  const f = document.getElementById("pwForm");
+  f.style.display = f.style.display === "none" ? "block" : "none";
+  document.getElementById("pwError").style.display = "none";
+  document.getElementById("pwSuccess").style.display = "none";
+}}
+
+function changePw() {{
+  const cur = document.getElementById("currentPw").value;
+  const np = document.getElementById("newPw").value;
+  const cp = document.getElementById("confirmPw").value;
+  const err = document.getElementById("pwError");
+  const suc = document.getElementById("pwSuccess");
+  err.style.display = "none";
+  suc.style.display = "none";
+  if (!cur || !np) {{ err.textContent = "パスワードを入力してください"; err.style.display = "block"; return; }}
+  if (np !== cp) {{ err.textContent = "新しいパスワードが一致しません"; err.style.display = "block"; return; }}
+  fetch(API_PREFIX + "/password/" + APP_NAME + "/set", {{
+    method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{current_password: cur, new_password: np}})
+  }})
+  .then(r => r.json())
+  .then(data => {{
+    if (data.status === "ok") {{
+      suc.textContent = "パスワードを変更しました";
+      suc.style.display = "block";
+      document.getElementById("currentPw").value = "";
+      document.getElementById("newPw").value = "";
+      document.getElementById("confirmPw").value = "";
+      sessionStorage.removeItem("dash_auth_" + APP_NAME);
+    }} else {{
+      err.textContent = data.error || "エラーが発生しました";
+      err.style.display = "block";
+    }}
+  }})
+  .catch(() => {{ err.textContent = "サーバーに接続できません"; err.style.display = "block"; }});
 }}
 
 function startRebuild() {{
@@ -1015,48 +1130,91 @@ async fn verify_app_password(
         return Json(serde_json::json!({"ok": false, "error": "Password required"}));
     }
 
-    let output = Command::new("docker")
-        .args(["exec", &app_name, "cat", "/root/.config/code-server/config.yaml"])
-        .output();
+    let config = match read_cs_config(&app_name) {
+        Some(c) => c,
+        None => return Json(serde_json::json!({"ok": false, "error": "Container not running"})),
+    };
 
-    match output {
-        Ok(o) if o.status.success() => {
-            let config = String::from_utf8_lossy(&o.stdout);
-            let password = config
-                .lines()
-                .find(|l| l.starts_with("password:"))
-                .map(|l| l.trim_start_matches("password:").trim().to_string())
-                .unwrap_or_default();
-            if password == input_pw {
-                Json(serde_json::json!({"ok": true}))
-            } else {
-                Json(serde_json::json!({"ok": false, "error": "Invalid password"}))
-            }
+    // Check hashed password first (user-set)
+    if let Some(hash_line) = config.lines().find(|l| l.starts_with("hashed-password:")) {
+        let hash = hash_line.trim_start_matches("hashed-password:").trim().trim_matches('"');
+        if verify_password_argon2(input_pw, hash) {
+            return Json(serde_json::json!({"ok": true}));
+        } else {
+            return Json(serde_json::json!({"ok": false, "error": "Invalid password"}));
         }
-        _ => Json(serde_json::json!({"ok": false, "error": "Container not running"})),
+    }
+
+    // Fall back to plaintext password (auto-generated or admin-reset)
+    let password = config
+        .lines()
+        .find(|l| l.starts_with("password:"))
+        .map(|l| l.trim_start_matches("password:").trim().to_string())
+        .unwrap_or_default();
+
+    if password == input_pw {
+        Json(serde_json::json!({"ok": true}))
+    } else {
+        Json(serde_json::json!({"ok": false, "error": "Invalid password"}))
     }
 }
 
 async fn reset_password(Path(app_name): Path<String>) -> Json<serde_json::Value> {
     let new_password = format!("{:016x}", rand::random::<u64>());
 
-    let sed_cmd = format!("s/^password: .*/password: {}/", new_password);
-    let write_result = Command::new("docker")
-        .args(["exec", &app_name, "sed", "-i", &sed_cmd, "/root/.config/code-server/config.yaml"])
-        .status();
-
-    if let Ok(s) = write_result {
-        if s.success() {
-            let _ = Command::new("docker")
-                .args(["exec", &app_name, "pkill", "-f", "code-server"])
-                .status();
-            let _ = Command::new("docker")
-                .args(["exec", "-d", &app_name, "sh", "-c",
-                    &format!("code-server --auth password --bind-addr 0.0.0.0:8000 --abs-proxy-base-path /{}-ide /app", app_name)])
-                .status();
-
-            return Json(serde_json::json!({"password": new_password}));
-        }
+    // Write as plaintext so admin can view it later
+    let password_line = format!("password: {}", new_password);
+    if update_cs_config_password(&app_name, &password_line) {
+        restart_code_server(&app_name);
+        Json(serde_json::json!({"password": new_password}))
+    } else {
+        Json(serde_json::json!({"error": "Failed to reset password"}))
     }
-    Json(serde_json::json!({"error": "Failed to reset password"}))
+}
+
+async fn set_password(
+    Path(app_name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let current_pw = body.get("current_password").and_then(|v| v.as_str()).unwrap_or("");
+    let new_pw = body.get("new_password").and_then(|v| v.as_str()).unwrap_or("");
+
+    if current_pw.is_empty() || new_pw.is_empty() {
+        return Json(serde_json::json!({"error": "Current and new passwords are required"}));
+    }
+
+    // Verify current password
+    let config = match read_cs_config(&app_name) {
+        Some(c) => c,
+        None => return Json(serde_json::json!({"error": "Config not found"})),
+    };
+
+    let verified = if let Some(hash_line) = config.lines().find(|l| l.starts_with("hashed-password:")) {
+        let hash = hash_line.trim_start_matches("hashed-password:").trim().trim_matches('"');
+        verify_password_argon2(current_pw, hash)
+    } else {
+        let password = config.lines()
+            .find(|l| l.starts_with("password:"))
+            .map(|l| l.trim_start_matches("password:").trim().to_string())
+            .unwrap_or_default();
+        password == current_pw
+    };
+
+    if !verified {
+        return Json(serde_json::json!({"error": "Current password is incorrect"}));
+    }
+
+    // Hash and set new password
+    let hashed = match hash_password_argon2(new_pw) {
+        Ok(h) => h,
+        Err(e) => return Json(serde_json::json!({"error": format!("Hash failed: {}", e)})),
+    };
+
+    let password_line = format!("hashed-password: \"{}\"", hashed);
+    if update_cs_config_password(&app_name, &password_line) {
+        restart_code_server(&app_name);
+        Json(serde_json::json!({"status": "ok"}))
+    } else {
+        Json(serde_json::json!({"error": "Failed to set password"}))
+    }
 }
