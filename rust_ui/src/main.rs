@@ -448,7 +448,7 @@ async fn list_apps(State(state): State<Arc<AppState>>) -> Json<Vec<AppStatus>> {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_dir() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name == "auth_config.json" {
+                    if name == "auth_config.json" || name.starts_with('.') {
                         continue;
                     }
                     let status = running_containers
