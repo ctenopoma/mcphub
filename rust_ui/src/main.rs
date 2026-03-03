@@ -499,12 +499,17 @@ async fn deploy_app(
         return Json(serde_json::json!({"error": "Docker build failed"}));
     }
 
+    // Ensure code-server config directory exists on host for password persistence
+    let cs_config_dir = format!("/apps/.code-server/{}", app_name);
+    let _ = fs::create_dir_all(&cs_config_dir);
+
     // Build docker run args with Traefik labels
     let mut args: Vec<String> = vec![
         "run".into(), "-d".into(),
         "--name".into(), app_name.clone(),
         "--network".into(), "mcp-net".into(),
         "-v".into(), format!("/apps/{}:/app", app_name),
+        "-v".into(), format!("{}:/root/.config/code-server", cs_config_dir),
         "-e".into(), format!("APP_NAME={}", app_name),
     ];
 
@@ -585,6 +590,10 @@ async fn delete_app(
             return Json(serde_json::json!({"error": format!("Failed to remove directory: {}", e)}));
         }
     }
+
+    // Remove code-server config directory
+    let cs_config_dir = format!("/apps/.code-server/{}", app_name);
+    let _ = fs::remove_dir_all(&cs_config_dir);
 
     // Remove auth config entry
     {
@@ -676,12 +685,17 @@ async fn rebuild_app(
                     .output()
                     .await;
 
+                // Ensure code-server config directory exists on host for password persistence
+                let cs_config_dir = format!("/apps/.code-server/{}", app_name);
+                let _ = tokio::fs::create_dir_all(&cs_config_dir).await;
+
                 // Build docker run args (mirrors deploy_app)
                 let mut args: Vec<String> = vec![
                     "run".into(), "-d".into(),
                     "--name".into(), app_name.clone(),
                     "--network".into(), "mcp-net".into(),
                     "-v".into(), format!("/apps/{}:/app", app_name),
+                    "-v".into(), format!("{}:/root/.config/code-server", cs_config_dir),
                     "-e".into(), format!("APP_NAME={}", app_name),
                 ];
                 args.push("--label=traefik.enable=true".into());
