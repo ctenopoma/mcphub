@@ -3,7 +3,7 @@ use axum::{
     http::{HeaderMap, Request, StatusCode},
     middleware::{self, Next},
     response::{sse::{Event, Sse}, IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -50,6 +50,53 @@ struct JwksCache {
     tenant_id: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct Group {
+    id: String,
+    name: String,
+    description: String,
+    containers: Vec<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Serialize)]
+struct ContainerSummary {
+    total: usize,
+    running: usize,
+    stopped: usize,
+    error: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupResponse {
+    id: String,
+    name: String,
+    description: String,
+    containers: Vec<String>,
+    container_summary: ContainerSummary,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
+struct CreateGroupRequest {
+    name: String,
+    description: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateGroupRequest {
+    name: String,
+    description: String,
+}
+
+#[derive(Deserialize)]
+struct AddContainerRequest {
+    container_name: String,
+}
+
 #[derive(Clone)]
 struct AppState {
     session_secret: String,
@@ -57,11 +104,83 @@ struct AppState {
     auth_config: Arc<RwLock<HashMap<String, AuthAppConfig>>>,
     jwks_cache: Arc<RwLock<Option<JwksCache>>>,
     manager_ip: String,
+    groups: Arc<RwLock<Vec<Group>>>,
 }
 
 // ── Auth config persistence ──
 
 const AUTH_CONFIG_PATH: &str = "/apps/auth_config.json";
+const GROUPS_CONFIG_PATH: &str = "/apps/groups_config.json";
+
+fn load_groups() -> Vec<Group> {
+    match fs::read_to_string(GROUPS_CONFIG_PATH) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn save_groups(groups: &Vec<Group>) -> Result<(), std::io::Error> {
+    let json = serde_json::to_string_pretty(groups)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    fs::write(GROUPS_CONFIG_PATH, json)
+}
+
+fn now_iso8601() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let mut days = secs / 86400;
+    let mut year = 1970u32;
+    loop {
+        let dy = if is_leap_year(year) { 366u64 } else { 365u64 };
+        if days < dy { break; }
+        days -= dy;
+        year += 1;
+    }
+    let leap = is_leap_year(year);
+    let months = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u32;
+    for &md in &months {
+        if days < md { break; }
+        days -= md;
+        month += 1;
+    }
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, days + 1, h, m, s)
+}
+
+fn is_leap_year(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn get_running_containers() -> HashMap<String, String> {
+    let docker_ps = Command::new("docker")
+        .args(["ps", "--format", "{{.Names}}|{{.Status}}"])
+        .output()
+        .unwrap_or_else(|_| std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(0),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
+    let ps_output = String::from_utf8_lossy(&docker_ps.stdout);
+    let mut running = HashMap::new();
+    for line in ps_output.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() == 2 {
+            running.insert(parts[0].to_string(), parts[1].to_string());
+        }
+    }
+    running
+}
+
+fn compute_summary(containers: &[String], running: &HashMap<String, String>) -> ContainerSummary {
+    let total = containers.len();
+    let running_count = containers.iter().filter(|name| running.contains_key(*name)).count();
+    ContainerSummary { total, running: running_count, stopped: total - running_count, error: 0 }
+}
 
 fn load_auth_config() -> HashMap<String, AuthAppConfig> {
     match fs::read_to_string(AUTH_CONFIG_PATH) {
@@ -117,12 +236,16 @@ async fn main() {
     let auth_config = load_auth_config();
     println!("Loaded auth config with {} app entries", auth_config.len());
 
+    let groups = load_groups();
+    println!("Loaded {} groups", groups.len());
+
     let state = Arc::new(AppState {
         session_secret,
         manager_password,
         auth_config: Arc::new(RwLock::new(auth_config)),
         jwks_cache: Arc::new(RwLock::new(None)),
         manager_ip,
+        groups: Arc::new(RwLock::new(groups)),
     });
 
     let serve_dir = ServeDir::new("frontend/out")
@@ -139,6 +262,10 @@ async fn main() {
         .route("/password/{app_name}", get(get_password))
         .route("/password/{app_name}/reset", post(reset_password))
         .route("/create/{app_name}", post(create_app))
+        .route("/groups", get(list_groups).post(create_group))
+        .route("/groups/{id}", put(update_group).delete(delete_group))
+        .route("/groups/{id}/containers", post(add_container_to_group))
+        .route("/groups/{id}/containers/{container}", delete(remove_container_from_group))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Public API routes (no dashboard auth)
@@ -1045,4 +1172,153 @@ async fn reset_password(Path(app_name): Path<String>) -> Json<serde_json::Value>
         }
     }
     Json(serde_json::json!({"error": "Failed to reset password"}))
+}
+
+// ── Group management endpoints ──
+
+async fn list_groups(State(state): State<Arc<AppState>>) -> Json<Vec<GroupResponse>> {
+    let groups = state.groups.read().unwrap().clone();
+    let running = get_running_containers();
+
+    if groups.is_empty() {
+        // Return a virtual "Default" group with all containers
+        let paths = match fs::read_dir("/apps") {
+            Ok(p) => p,
+            Err(_) => return Json(vec![]),
+        };
+        let mut all_containers: Vec<String> = vec![];
+        for path in paths {
+            if let Ok(entry) = path {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_dir() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name != "auth_config.json" && name != "groups_config.json" {
+                            all_containers.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        let summary = compute_summary(&all_containers, &running);
+        let now = now_iso8601();
+        return Json(vec![GroupResponse {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            description: "すべてのコンテナ".to_string(),
+            containers: all_containers,
+            container_summary: summary,
+            created_at: now.clone(),
+            updated_at: now,
+        }]);
+    }
+
+    let responses = groups.iter().map(|g| {
+        let summary = compute_summary(&g.containers, &running);
+        GroupResponse {
+            id: g.id.clone(),
+            name: g.name.clone(),
+            description: g.description.clone(),
+            containers: g.containers.clone(),
+            container_summary: summary,
+            created_at: g.created_at.clone(),
+            updated_at: g.updated_at.clone(),
+        }
+    }).collect();
+
+    Json(responses)
+}
+
+async fn create_group(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateGroupRequest>,
+) -> Json<serde_json::Value> {
+    let new_group = Group {
+        id: format!("{:016x}", rand::random::<u64>()),
+        name: body.name,
+        description: body.description,
+        containers: vec![],
+        created_at: now_iso8601(),
+        updated_at: now_iso8601(),
+    };
+    let mut groups = state.groups.write().unwrap();
+    groups.push(new_group);
+    match save_groups(&groups) {
+        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Err(e) => Json(serde_json::json!({"error": format!("Failed to save: {}", e)})),
+    }
+}
+
+async fn update_group(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateGroupRequest>,
+) -> Json<serde_json::Value> {
+    let mut groups = state.groups.write().unwrap();
+    match groups.iter_mut().find(|g| g.id == id) {
+        Some(group) => {
+            group.name = body.name;
+            group.description = body.description;
+            group.updated_at = now_iso8601();
+            match save_groups(&groups) {
+                Ok(_) => Json(serde_json::json!({"status": "ok"})),
+                Err(e) => Json(serde_json::json!({"error": format!("Failed to save: {}", e)})),
+            }
+        }
+        None => Json(serde_json::json!({"error": "Group not found"})),
+    }
+}
+
+async fn delete_group(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let mut groups = state.groups.write().unwrap();
+    let before = groups.len();
+    groups.retain(|g| g.id != id);
+    if groups.len() == before {
+        return Json(serde_json::json!({"error": "Group not found"}));
+    }
+    match save_groups(&groups) {
+        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Err(e) => Json(serde_json::json!({"error": format!("Failed to save: {}", e)})),
+    }
+}
+
+async fn add_container_to_group(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<AddContainerRequest>,
+) -> Json<serde_json::Value> {
+    let mut groups = state.groups.write().unwrap();
+    match groups.iter_mut().find(|g| g.id == id) {
+        Some(group) => {
+            if !group.containers.contains(&body.container_name) {
+                group.containers.push(body.container_name);
+                group.updated_at = now_iso8601();
+            }
+            match save_groups(&groups) {
+                Ok(_) => Json(serde_json::json!({"status": "ok"})),
+                Err(e) => Json(serde_json::json!({"error": format!("Failed to save: {}", e)})),
+            }
+        }
+        None => Json(serde_json::json!({"error": "Group not found"})),
+    }
+}
+
+async fn remove_container_from_group(
+    State(state): State<Arc<AppState>>,
+    Path((id, container)): Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    let mut groups = state.groups.write().unwrap();
+    match groups.iter_mut().find(|g| g.id == id) {
+        Some(group) => {
+            group.containers.retain(|c| c != &container);
+            group.updated_at = now_iso8601();
+            match save_groups(&groups) {
+                Ok(_) => Json(serde_json::json!({"status": "ok"})),
+                Err(e) => Json(serde_json::json!({"error": format!("Failed to save: {}", e)})),
+            }
+        }
+        None => Json(serde_json::json!({"error": "Group not found"})),
+    }
 }
