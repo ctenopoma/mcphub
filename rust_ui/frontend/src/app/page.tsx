@@ -255,7 +255,9 @@ export default function Dashboard() {
       const res = await fetch(`/api/password/${appName}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.password) {
+        if (data.is_custom) {
+          setPasswords((prev) => ({ ...prev, [appName]: "__custom__" }));
+        } else if (data.password) {
           setPasswords((prev) => ({ ...prev, [appName]: data.password }));
         } else {
           setPasswords((prev) => ({ ...prev, [appName]: data.error || "Error" }));
@@ -267,7 +269,7 @@ export default function Dashboard() {
   };
 
   const resetPassword = async (appName: string) => {
-    if (!confirm("パスワードをリセットしますか？")) return;
+    if (!confirm("パスワードを初期化しますか？新しいランダムパスワードが生成されます。")) return;
     try {
       const res = await fetch(`/api/password/${appName}/reset`, { method: "POST" });
       if (res.ok) {
@@ -539,24 +541,30 @@ export default function Dashboard() {
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="text-xs text-muted-foreground mb-1">IDE Password</p>
-                          <code className="text-sm font-mono font-semibold">{passwords[app.name]}</code>
+                          {passwords[app.name] === "__custom__" ? (
+                            <span className="text-sm text-muted-foreground">ユーザー設定済み（非表示）</span>
+                          ) : (
+                            <code className="text-sm font-mono font-semibold">{passwords[app.name]}</code>
+                          )}
                         </div>
                         <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={() => copyToClipboard(passwords[app.name])}
-                            title="Copy"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
+                          {passwords[app.name] !== "__custom__" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => copyToClipboard(passwords[app.name])}
+                              title="Copy"
+                            >
+                              <Copy className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8"
                             onClick={() => resetPassword(app.name)}
-                            title="Reset Password"
+                            title="パスワード初期化"
                           >
                             <RotateCcw className="h-4 w-4" />
                           </Button>
