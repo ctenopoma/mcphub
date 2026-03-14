@@ -24,7 +24,6 @@ import {
   AlertTriangle,
   LayoutGrid,
   List,
-  MoreVertical,
   Plus,
   Search,
   X,
@@ -109,7 +108,6 @@ export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState<"card" | "list">("card");
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   // Create dialog
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -182,7 +180,6 @@ export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
     if (!confirm("このグループを削除しますか？")) return;
     await fetch(`/api/groups/${id}`, { method: "DELETE" });
     await fetchData();
-    setOpenMenuId(null);
     if (editingGroup?.id === id) setEditingGroup(null);
   };
 
@@ -218,7 +215,6 @@ export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
     setEditName(group.name);
     setEditDesc(group.description);
     setSelectedContainer("");
-    setOpenMenuId(null);
   };
 
   // Containers not yet in the editing group
@@ -240,11 +236,6 @@ export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Click-outside overlay for kebab menus */}
-      {openMenuId && (
-        <div className="fixed inset-0 z-[5]" onClick={() => setOpenMenuId(null)} />
-      )}
-
       {/* Operation area */}
       <div className="flex items-center gap-3 flex-wrap">
         <Button onClick={() => setShowCreateDialog(true)}>
@@ -310,35 +301,25 @@ export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
                       )}
                     </CardTitle>
                     {!isDefault && (
-                      <div className="relative flex-shrink-0">
+                      <div className="flex gap-1 flex-shrink-0">
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() =>
-                            setOpenMenuId(openMenuId === group.id ? null : group.id)
-                          }
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => openEditDialog(group)}
                         >
-                          <MoreVertical className="h-4 w-4" />
+                          <Pencil className="h-3 w-3" />
+                          編集
                         </Button>
-                        {openMenuId === group.id && (
-                          <div className="absolute right-0 top-8 z-10 w-40 rounded-md border border-border bg-popover shadow-md text-popover-foreground">
-                            <button
-                              className="w-full text-left px-3 py-2 text-sm hover:bg-accent rounded-t-md flex items-center gap-2"
-                              onClick={() => openEditDialog(group)}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                              編集
-                            </button>
-                            <button
-                              className="w-full text-left px-3 py-2 text-sm hover:bg-accent text-destructive rounded-b-md flex items-center gap-2"
-                              onClick={() => handleDeleteGroup(group.id)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              削除
-                            </button>
-                          </div>
-                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs text-destructive border-destructive/50 hover:text-destructive"
+                          onClick={() => handleDeleteGroup(group.id)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          削除
+                        </Button>
                       </div>
                     )}
                   </div>
@@ -378,18 +359,11 @@ export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
                   <p className="text-xs text-muted-foreground">
                     Updated {formatRelativeTime(group.updatedAt)}
                   </p>
-                  <div className="flex gap-1">
-                    {onGroupSelect && (
-                      <Button size="sm" onClick={() => onGroupSelect(group)}>
-                        開く
-                      </Button>
-                    )}
-                    {!isDefault && (
-                      <Button variant="outline" size="sm" onClick={() => openEditDialog(group)}>
-                        編集
-                      </Button>
-                    )}
-                  </div>
+                  {onGroupSelect && (
+                    <Button size="sm" onClick={() => onGroupSelect(group)}>
+                      開く
+                    </Button>
+                  )}
                 </CardFooter>
               </Card>
             );
@@ -465,14 +439,11 @@ export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
                         {!isDefault && (
                           <>
                             <Button variant="outline" size="sm" onClick={() => openEditDialog(group)}>
+                              <Pencil className="h-3.5 w-3.5" />
                               編集
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive"
-                              onClick={() => handleDeleteGroup(group.id)}
-                            >
+                            <Button variant="outline" size="sm" className="text-destructive border-destructive/50 hover:text-destructive" onClick={() => handleDeleteGroup(group.id)}>
+                              <Trash2 className="h-3.5 w-3.5" />
                               削除
                             </Button>
                           </>

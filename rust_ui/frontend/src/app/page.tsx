@@ -286,10 +286,44 @@ export default function Dashboard() {
 
   const [currentView, setCurrentView] = useState<"groups" | "containers" | "group-detail">("groups");
   const [selectedGroup, setSelectedGroup] = useState<{ id: string; name: string; description: string; containers: string[] } | null>(null);
+  const [allGroups, setAllGroups] = useState<{ id: string; name: string; containers: string[] }[]>([]);
+  const [moveTargets, setMoveTargets] = useState<Record<string, string>>({});
+
+  const fetchGroups = async () => {
+    const res = await fetch("/api/groups");
+    if (res.ok) {
+      const data = await res.json();
+      setAllGroups(data);
+    }
+  };
 
   const handleGroupSelect = (group: { id: string; name: string; description: string; containers: string[] }) => {
     setSelectedGroup(group);
     setCurrentView("group-detail");
+    fetchGroups();
+  };
+
+  const moveContainer = async (containerName: string, fromGroupId: string, toGroupId: string) => {
+    if (!toGroupId) return;
+    if (fromGroupId !== "default") {
+      await fetch(`/api/groups/${fromGroupId}/containers/${containerName}`, { method: "DELETE" });
+    }
+    await fetch(`/api/groups/${toGroupId}/containers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ container_name: containerName }),
+    });
+    setMoveTargets((prev) => ({ ...prev, [containerName]: "" }));
+    // Refresh selectedGroup data
+    const res = await fetch("/api/groups");
+    if (res.ok) {
+      const updated = await res.json();
+      setAllGroups(updated);
+      if (selectedGroup) {
+        const found = updated.find((g: { id: string }) => g.id === fromGroupId);
+        if (found) setSelectedGroup(found);
+      }
+    }
   };
 
   const isDuplicate = apps.some((app) => app.name === newAppName);
@@ -643,29 +677,56 @@ export default function Dashboard() {
                             </div>
                           )}
                         </CardContent>
-                        <CardFooter className="pt-4 border-t border-border flex gap-2">
-                          <Button
-                            className="flex-1 font-semibold"
-                            variant="default"
-                            disabled={!isUp}
-                            onClick={() => {
-                              const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8085";
-                              const host = window.location.hostname;
-                              window.open(`http://${host}:${traefikPort}/${app.name}-dashboard/`, "_blank");
-                            }}
-                          >
-                            <ExternalLink className="mr-2 h-4 w-4" />
-                            Open Dashboard
-                          </Button>
-                          <Button
-                            className="flex-1"
-                            variant="outline"
-                            onClick={() => startRebuild(app.name)}
-                            disabled={rebuildState?.appName === app.name && rebuildState.status === "building"}
-                          >
-                            <Hammer className="mr-2 h-4 w-4" />
-                            Rebuild
-                          </Button>
+                        <CardFooter className="pt-4 border-t border-border flex flex-col gap-2">
+                          <div className="flex gap-2 w-full">
+                            <Button
+                              className="flex-1 font-semibold"
+                              variant="default"
+                              disabled={!isUp}
+                              onClick={() => {
+                                const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8085";
+                                const host = window.location.hostname;
+                                window.open(`http://${host}:${traefikPort}/${app.name}-dashboard/`, "_blank");
+                              }}
+                            >
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              Open Dashboard
+                            </Button>
+                            <Button
+                              className="flex-1"
+                              variant="outline"
+                              onClick={() => startRebuild(app.name)}
+                              disabled={rebuildState?.appName === app.name && rebuildState.status === "building"}
+                            >
+                              <Hammer className="mr-2 h-4 w-4" />
+                              Rebuild
+                            </Button>
+                          </div>
+                          {allGroups.filter((g) => g.id !== "default" && g.id !== selectedGroup.id).length > 0 && (
+                            <div className="flex gap-2 w-full items-center">
+                              <span className="text-xs text-muted-foreground flex-shrink-0">移動:</span>
+                              <select
+                                className="flex-1 text-xs rounded-md border border-input bg-background px-2 py-1.5 text-foreground"
+                                value={moveTargets[app.name] || ""}
+                                onChange={(e) => setMoveTargets((prev) => ({ ...prev, [app.name]: e.target.value }))}
+                              >
+                                <option value="">グループを選択...</option>
+                                {allGroups
+                                  .filter((g) => g.id !== "default" && g.id !== selectedGroup.id)
+                                  .map((g) => (
+                                    <option key={g.id} value={g.id}>{g.name}</option>
+                                  ))}
+                              </select>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={!moveTargets[app.name]}
+                                onClick={() => moveContainer(app.name, selectedGroup.id, moveTargets[app.name])}
+                              >
+                                移動
+                              </Button>
+                            </div>
+                          )}
                         </CardFooter>
                       </Card>
                     );

@@ -1352,41 +1352,57 @@ async fn list_groups(State(state): State<Arc<AppState>>) -> Json<Vec<GroupRespon
     let groups = state.groups.read().unwrap().clone();
     let running = get_running_containers();
 
-    if groups.is_empty() {
-        // Return a virtual "Default" group with all containers
-        let paths = match fs::read_dir("/apps") {
-            Ok(p) => p,
-            Err(_) => return Json(vec![]),
-        };
-        let mut all_containers: Vec<String> = vec![];
-        for path in paths {
-            if let Ok(entry) = path {
-                if let Ok(ft) = entry.file_type() {
-                    if ft.is_dir() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if name != "auth_config.json" && name != "groups_config.json" {
-                            all_containers.push(name);
-                        }
+    // Collect all app directories
+    let paths = match fs::read_dir("/apps") {
+        Ok(p) => p,
+        Err(_) => return Json(vec![]),
+    };
+    let mut all_containers: Vec<String> = vec![];
+    for path in paths {
+        if let Ok(entry) = path {
+            if let Ok(ft) = entry.file_type() {
+                if ft.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !name.starts_with('.') && name != "auth_config.json" && name != "groups_config.json" {
+                        all_containers.push(name);
                     }
                 }
             }
         }
-        let summary = compute_summary(&all_containers, &running);
+    }
+
+    // Containers assigned to any real group
+    let assigned: std::collections::HashSet<&str> = groups.iter()
+        .flat_map(|g| g.containers.iter().map(|c| c.as_str()))
+        .collect();
+
+    // Ungrouped containers
+    let ungrouped: Vec<String> = all_containers.iter()
+        .filter(|c| !assigned.contains(c.as_str()))
+        .cloned()
+        .collect();
+
+    let mut responses: Vec<GroupResponse> = Vec::new();
+
+    // Virtual "Default" group for ungrouped containers (always shown if non-empty)
+    if !ungrouped.is_empty() {
+        let summary = compute_summary(&ungrouped, &running);
         let now = now_iso8601();
-        return Json(vec![GroupResponse {
+        responses.push(GroupResponse {
             id: "default".to_string(),
             name: "Default".to_string(),
-            description: "すべてのコンテナ".to_string(),
-            containers: all_containers,
+            description: "未所属のコンテナ".to_string(),
+            containers: ungrouped,
             container_summary: summary,
             created_at: now.clone(),
             updated_at: now,
-        }]);
+        });
     }
 
-    let responses = groups.iter().map(|g| {
+    // Real groups
+    for g in &groups {
         let summary = compute_summary(&g.containers, &running);
-        GroupResponse {
+        responses.push(GroupResponse {
             id: g.id.clone(),
             name: g.name.clone(),
             description: g.description.clone(),
@@ -1394,8 +1410,8 @@ async fn list_groups(State(state): State<Arc<AppState>>) -> Json<Vec<GroupRespon
             container_summary: summary,
             created_at: g.created_at.clone(),
             updated_at: g.updated_at.clone(),
-        }
-    }).collect();
+        });
+    }
 
     Json(responses)
 }
