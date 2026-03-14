@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle, Hammer } from "lucide-react";
+import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle, Hammer, FolderKanban, LayoutList, Settings } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
+import ProjectGroupsDashboard from "@/components/ProjectGroupsDashboard";
 
 interface AppStatus {
   name: string;
@@ -281,6 +282,8 @@ export default function Dashboard() {
     }
   };
 
+  const [currentView, setCurrentView] = useState<"groups" | "containers">("groups");
+
   const isDuplicate = apps.some((app) => app.name === newAppName);
   const isCreateDisabled = !newAppName.trim() || isDuplicate || createLoading;
 
@@ -430,32 +433,87 @@ export default function Dashboard() {
 
   // Dashboard
   return (
-    <div className="min-h-screen bg-background p-8 font-sans">
-      <div className="max-w-6xl mx-auto space-y-8">
-        <div className="flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <img src="/mcphub.png" alt="MCP HUB" className="h-14 w-14 rounded-lg object-cover" />
-            <div>
-              <h1 className="text-4xl font-bold tracking-tight">MCP HUB</h1>
-              <p className="text-muted-foreground mt-1">MCP & Web IDE Container Orchestration</p>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={() => { setNewAppName(""); setShowCreateDialog(true); }}>
-              <Plus className="mr-2 h-4 w-4" />
-              New App
-            </Button>
-            <Button onClick={fetchApps} variant="outline" size="icon">
-              <RefreshCw className="h-4 w-4" />
-            </Button>
-            <Button onClick={handleLogout} variant="outline" size="icon" title="ログアウト">
-              <LogOut className="h-4 w-4" />
-            </Button>
+    <div className="min-h-screen bg-background flex flex-col font-sans">
+      {/* Top header */}
+      <header className="border-b border-border px-6 py-3 flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-3">
+          <img src="/mcphub.png" alt="MCP HUB" className="h-9 w-9 rounded-lg object-cover" />
+          <div>
+            <h1 className="text-xl font-bold tracking-tight leading-none">MCP HUB</h1>
+            <p className="text-xs text-muted-foreground mt-0.5">MCP & Web IDE Container Orchestration</p>
           </div>
         </div>
+        <div className="flex gap-2">
+          <Button onClick={fetchApps} variant="outline" size="icon" title="更新">
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button onClick={handleLogout} variant="outline" size="icon" title="ログアウト">
+            <LogOut className="h-4 w-4" />
+          </Button>
+        </div>
+      </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {apps.map((app) => {
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar */}
+        <aside className="w-52 border-r border-border flex-shrink-0 flex flex-col p-3 gap-1">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-3 py-2">
+            ナビゲーション
+          </p>
+          <button
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors text-left ${
+              currentView === "groups"
+                ? "bg-accent text-accent-foreground font-medium"
+                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            }`}
+            onClick={() => setCurrentView("groups")}
+          >
+            <FolderKanban className="h-4 w-4 flex-shrink-0" />
+            ホーム（グループ一覧）
+          </button>
+          <button
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors text-left ${
+              currentView === "containers"
+                ? "bg-accent text-accent-foreground font-medium"
+                : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            }`}
+            onClick={() => setCurrentView("containers")}
+          >
+            <LayoutList className="h-4 w-4 flex-shrink-0" />
+            すべてのコンテナ
+          </button>
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-left text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
+          >
+            <Settings className="h-4 w-4 flex-shrink-0" />
+            システム設定
+          </button>
+        </aside>
+
+        {/* Main content */}
+        <main className="flex-1 overflow-auto p-8">
+          {currentView === "groups" ? (
+            <div className="max-w-6xl mx-auto space-y-6">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">プロジェクトグループ</h2>
+                <p className="text-muted-foreground mt-1">コンテナをグループ（プロジェクト）単位で管理します</p>
+              </div>
+              <ProjectGroupsDashboard />
+            </div>
+          ) : (
+            <div className="max-w-6xl mx-auto space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight">すべてのコンテナ</h2>
+                  <p className="text-muted-foreground mt-1">システム上のすべてのコンテナを管理します</p>
+                </div>
+                <Button onClick={() => { setNewAppName(""); setShowCreateDialog(true); }}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  New App
+                </Button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {apps.map((app) => {
             const isUp = app.status.startsWith("Up");
             const authBadge = authLabel(app.auth_type);
             return (
@@ -603,7 +661,10 @@ export default function Dashboard() {
               </Card>
             );
           })}
-        </div>
+              </div>
+            </div>
+          )}
+        </main>
       </div>
 
       {/* Create App Dialog */}
