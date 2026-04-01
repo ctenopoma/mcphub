@@ -46,7 +46,7 @@ COPY apps /apps
 # Setup entrypoint and MCP script
 COPY entrypoint.sh .
 COPY mcp_server.py .
-RUN chmod +x entrypoint.sh
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 
 # Expose ports
 # 8080: Traefik, 8081: Rust Manager UI, 8000: Python MCP Server

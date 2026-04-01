@@ -30,8 +30,10 @@ done
 echo "Creating internal Docker network..."
 docker network create mcp-net || true
 
-UI_PORT="${UI_PORT:-8081}"
-MCP_PORT="${MCP_PORT:-8000}"
+HOST_UI_PORT="${UI_PORT:-8081}"
+HOST_MCP_PORT="${MCP_PORT:-8000}"
+INTERNAL_UI_PORT=8081
+INTERNAL_MCP_PORT=8000
 MANAGER_PASSWORD="${MANAGER_PASSWORD:-mcp-hub-password}"
 
 # Detect DinD bridge gateway IP (how Traefik containers reach this host)
@@ -66,7 +68,7 @@ http:
     manager-ui:
       loadBalancer:
         servers:
-          - url: "http://${MANAGER_IP}:${UI_PORT}"
+          - url: "http://${MANAGER_IP}:${INTERNAL_UI_PORT}"
 DYNEOF
 
 echo "Starting Traefik..."
@@ -84,8 +86,8 @@ docker run -d \
   --providers.file.directory=/etc/traefik/dynamic \
   --providers.file.watch=true
 
-echo "Starting Rust Management UI on port ${UI_PORT}..."
-HOST=0.0.0.0 UI_PORT="${UI_PORT}" MANAGER_PASSWORD="${MANAGER_PASSWORD}" MANAGER_IP="${MANAGER_IP}" /manager/manager-ui &
+echo "Starting Rust Management UI on internal port ${INTERNAL_UI_PORT} (published as ${HOST_UI_PORT})..."
+HOST=0.0.0.0 UI_PORT="${INTERNAL_UI_PORT}" MANAGER_PASSWORD="${MANAGER_PASSWORD}" MANAGER_IP="${MANAGER_IP}" /manager/manager-ui &
 
-echo "Starting Python MCP Server on port ${MCP_PORT}..."
-MCP_PORT="${MCP_PORT}" python3 mcp_server.py
+echo "Starting Python MCP Server on internal port ${INTERNAL_MCP_PORT} (published as ${HOST_MCP_PORT})..."
+MCP_PORT="${INTERNAL_MCP_PORT}" python3 mcp_server.py
