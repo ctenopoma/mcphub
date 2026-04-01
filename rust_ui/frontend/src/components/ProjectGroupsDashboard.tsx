@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -24,10 +24,18 @@ import {
   AlertTriangle,
   LayoutGrid,
   List,
-  MoreVertical,
   Plus,
   Search,
+  X,
+  Pencil,
+  Trash2,
 } from "lucide-react";
+
+interface AppStatus {
+  name: string;
+  status: string;
+  auth_type: string;
+}
 
 interface ContainerSummary {
   total: number;
@@ -36,65 +44,15 @@ interface ContainerSummary {
   error: number;
 }
 
-interface ProjectGroup {
+interface Group {
   id: string;
   name: string;
   description: string;
+  containers: string[];
   containerSummary: ContainerSummary;
   createdAt: string;
   updatedAt: string;
-  cpuUsagePercent?: number;
-  memoryUsagePercent?: number;
 }
-
-const MOCK_GROUPS: ProjectGroup[] = [
-  {
-    id: "1",
-    name: "Production Services",
-    description: "本番環境で稼働中の主要なMCPサービス群",
-    containerSummary: { total: 6, running: 3, stopped: 2, error: 1 },
-    createdAt: "2026-01-10T09:00:00Z",
-    updatedAt: "2026-03-14T10:30:00Z",
-    cpuUsagePercent: 45,
-    memoryUsagePercent: 62,
-  },
-  {
-    id: "2",
-    name: "Development Sandbox",
-    description: "開発・テスト用の一時的なコンテナ環境",
-    containerSummary: { total: 4, running: 4, stopped: 0, error: 0 },
-    createdAt: "2026-01-15T14:00:00Z",
-    updatedAt: "2026-03-13T18:45:00Z",
-    cpuUsagePercent: 12,
-    memoryUsagePercent: 38,
-  },
-  {
-    id: "3",
-    name: "Analytics Pipeline",
-    description: "データ収集・分析用パイプラインのMCPコンテナ",
-    containerSummary: { total: 3, running: 3, stopped: 0, error: 0 },
-    createdAt: "2026-02-01T11:00:00Z",
-    updatedAt: "2026-03-14T08:00:00Z",
-  },
-  {
-    id: "4",
-    name: "Legacy Apps",
-    description: "移行待ちのレガシーアプリケーション",
-    containerSummary: { total: 5, running: 0, stopped: 5, error: 0 },
-    createdAt: "2025-11-20T10:00:00Z",
-    updatedAt: "2026-02-28T16:00:00Z",
-  },
-  {
-    id: "5",
-    name: "Experimental",
-    description: "新機能プロトタイプ・実験用コンテナ",
-    containerSummary: { total: 2, running: 1, stopped: 1, error: 0 },
-    createdAt: "2026-03-01T09:30:00Z",
-    updatedAt: "2026-03-14T11:00:00Z",
-    cpuUsagePercent: 8,
-    memoryUsagePercent: 25,
-  },
-];
 
 function formatRelativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -133,30 +91,154 @@ function ContainerStatusBadges({ summary }: { summary: ContainerSummary }) {
   );
 }
 
-export default function ProjectGroupsDashboard() {
+interface GroupSelectInfo {
+  id: string;
+  name: string;
+  description: string;
+  containers: string[];
+}
+
+interface Props {
+  onGroupSelect?: (group: GroupSelectInfo) => void;
+}
+
+export default function ProjectGroupsDashboard({ onGroupSelect }: Props) {
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [allApps, setAllApps] = useState<AppStatus[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState<"card" | "list">("card");
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-  const filtered = MOCK_GROUPS.filter(
+  // Create dialog
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupDesc, setNewGroupDesc] = useState("");
+  const [createLoading, setCreateLoading] = useState(false);
+
+  // Edit dialog
+  const [editingGroup, setEditingGroup] = useState<Group | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [selectedContainer, setSelectedContainer] = useState("");
+  const [editLoading, setEditLoading] = useState(false);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const [groupsRes, appsRes] = await Promise.all([
+        fetch("/api/groups"),
+        fetch("/api/apps"),
+      ]);
+      if (groupsRes.ok) setGroups(await groupsRes.json());
+      if (appsRes.ok) setAllApps(await appsRes.json());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 10000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim()) return;
+    setCreateLoading(true);
+    try {
+      await fetch("/api/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newGroupName.trim(), description: newGroupDesc.trim() }),
+      });
+      setShowCreateDialog(false);
+      setNewGroupName("");
+      setNewGroupDesc("");
+      await fetchData();
+    } finally {
+      setCreateLoading(false);
+    }
+  };
+
+  const handleUpdateGroup = async () => {
+    if (!editingGroup || !editName.trim()) return;
+    setEditLoading(true);
+    try {
+      await fetch(`/api/groups/${editingGroup.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editName.trim(), description: editDesc.trim() }),
+      });
+      await fetchData();
+      // Update editingGroup to reflect latest state
+      setEditingGroup((prev) => prev ? { ...prev, name: editName.trim(), description: editDesc.trim() } : null);
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleDeleteGroup = async (id: string) => {
+    if (!confirm("このグループを削除しますか？")) return;
+    await fetch(`/api/groups/${id}`, { method: "DELETE" });
+    await fetchData();
+    if (editingGroup?.id === id) setEditingGroup(null);
+  };
+
+  const handleAddContainer = async (groupId: string, containerName: string) => {
+    if (!containerName) return;
+    await fetch(`/api/groups/${groupId}/containers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ container_name: containerName }),
+    });
+    setSelectedContainer("");
+    await fetchData();
+    // Refresh editingGroup
+    const updated = groups.find((g) => g.id === groupId);
+    if (updated) {
+      const refreshed = await fetch("/api/groups").then((r) => r.json());
+      const found = (refreshed as Group[]).find((g) => g.id === groupId);
+      if (found) setEditingGroup(found);
+    }
+  };
+
+  const handleRemoveContainer = async (groupId: string, containerName: string) => {
+    await fetch(`/api/groups/${groupId}/containers/${containerName}`, { method: "DELETE" });
+    await fetchData();
+    // Refresh editingGroup
+    const refreshed = await fetch("/api/groups").then((r) => r.json());
+    const found = (refreshed as Group[]).find((g) => g.id === groupId);
+    if (found) setEditingGroup(found);
+  };
+
+  const openEditDialog = (group: Group) => {
+    setEditingGroup(group);
+    setEditName(group.name);
+    setEditDesc(group.description);
+    setSelectedContainer("");
+  };
+
+  // Containers not yet in the editing group
+  const availableContainers = editingGroup
+    ? allApps.filter((app) => !editingGroup.containers.includes(app.name))
+    : [];
+
+  const isVirtualDefault = groups.length === 1 && groups[0].id === "default";
+
+  const filtered = groups.filter(
     (g) =>
       g.name.toLowerCase().includes(search.toLowerCase()) ||
       g.description.toLowerCase().includes(search.toLowerCase())
   );
 
+  if (loading) {
+    return <div className="text-center py-16 text-muted-foreground">読み込み中...</div>;
+  }
+
   return (
     <div className="space-y-6">
-      {/* Click-outside overlay for kebab menus */}
-      {openMenuId && (
-        <div
-          className="fixed inset-0 z-[5]"
-          onClick={() => setOpenMenuId(null)}
-        />
-      )}
-
       {/* Operation area */}
       <div className="flex items-center gap-3 flex-wrap">
-        <Button>
+        <Button onClick={() => setShowCreateDialog(true)}>
           <Plus className="mr-2 h-4 w-4" />
           グループを作成
         </Button>
@@ -202,6 +284,7 @@ export default function ProjectGroupsDashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filtered.map((group) => {
             const hasError = group.containerSummary.error > 0;
+            const isDefault = group.id === "default";
             return (
               <Card
                 key={group.id}
@@ -213,43 +296,32 @@ export default function ProjectGroupsDashboard() {
                   <div className="flex justify-between items-start gap-2">
                     <CardTitle className="text-lg leading-tight">
                       {group.name}
-                    </CardTitle>
-                    <div className="relative flex-shrink-0">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() =>
-                          setOpenMenuId(
-                            openMenuId === group.id ? null : group.id
-                          )
-                        }
-                      >
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                      {openMenuId === group.id && (
-                        <div className="absolute right-0 top-8 z-10 w-40 rounded-md border border-border bg-popover shadow-md text-popover-foreground">
-                          <button
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-accent rounded-t-md"
-                            onClick={() => setOpenMenuId(null)}
-                          >
-                            詳細を表示
-                          </button>
-                          <button
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-accent"
-                            onClick={() => setOpenMenuId(null)}
-                          >
-                            設定
-                          </button>
-                          <button
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-accent text-destructive rounded-b-md"
-                            onClick={() => setOpenMenuId(null)}
-                          >
-                            削除
-                          </button>
-                        </div>
+                      {isDefault && (
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">(自動)</span>
                       )}
-                    </div>
+                    </CardTitle>
+                    {!isDefault && (
+                      <div className="flex gap-1 flex-shrink-0">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => openEditDialog(group)}
+                        >
+                          <Pencil className="h-3 w-3" />
+                          編集
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs text-destructive border-destructive/50 hover:text-destructive"
+                          onClick={() => handleDeleteGroup(group.id)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          削除
+                        </Button>
+                      </div>
+                    )}
                   </div>
                   <CardDescription className="text-sm line-clamp-2">
                     {group.description}
@@ -263,37 +335,35 @@ export default function ProjectGroupsDashboard() {
                     </div>
                   )}
                   <ContainerStatusBadges summary={group.containerSummary} />
-                  <p className="text-xs text-muted-foreground">
-                    合計 {group.containerSummary.total} コンテナ
-                  </p>
-                  {(group.cpuUsagePercent !== undefined ||
-                    group.memoryUsagePercent !== undefined) && (
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      {group.cpuUsagePercent !== undefined && (
-                        <div className="rounded-md bg-muted px-2 py-1.5">
-                          <p className="text-xs text-muted-foreground">CPU</p>
-                          <p className="text-sm font-semibold">
-                            {group.cpuUsagePercent}%
-                          </p>
-                        </div>
-                      )}
-                      {group.memoryUsagePercent !== undefined && (
-                        <div className="rounded-md bg-muted px-2 py-1.5">
-                          <p className="text-xs text-muted-foreground">
-                            Memory
-                          </p>
-                          <p className="text-sm font-semibold">
-                            {group.memoryUsagePercent}%
-                          </p>
-                        </div>
-                      )}
+                  {group.containers.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">コンテナなし</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {group.containers.map((name) => {
+                        const app = allApps.find((a) => a.name === name);
+                        const isRunning = app?.status?.startsWith("Up");
+                        return (
+                          <div key={name} className="flex items-center gap-2 text-sm">
+                            <span className={`h-2 w-2 rounded-full flex-shrink-0 ${isRunning ? "bg-green-500" : "bg-zinc-500"}`} />
+                            <span className="truncate">{name}</span>
+                            <span className="ml-auto text-xs text-muted-foreground flex-shrink-0">
+                              {isRunning ? "稼働中" : "停止"}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
-                <CardFooter className="pt-3 border-t border-border">
+                <CardFooter className="pt-3 border-t border-border flex justify-between items-center">
                   <p className="text-xs text-muted-foreground">
                     Updated {formatRelativeTime(group.updatedAt)}
                   </p>
+                  {onGroupSelect && (
+                    <Button size="sm" onClick={() => onGroupSelect(group)}>
+                      開く
+                    </Button>
+                  )}
                 </CardFooter>
               </Card>
             );
@@ -317,12 +387,11 @@ export default function ProjectGroupsDashboard() {
             <TableBody>
               {filtered.map((group) => {
                 const hasError = group.containerSummary.error > 0;
+                const isDefault = group.id === "default";
                 return (
                   <TableRow
                     key={group.id}
-                    className={
-                      hasError ? "border-l-2 border-l-destructive" : ""
-                    }
+                    className={hasError ? "border-l-2 border-l-destructive" : ""}
                   >
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
@@ -330,25 +399,55 @@ export default function ProjectGroupsDashboard() {
                           <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0" />
                         )}
                         {group.name}
+                        {isDefault && (
+                          <span className="text-xs text-muted-foreground">(自動)</span>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="hidden md:table-cell text-muted-foreground text-sm max-w-xs truncate">
                       {group.description}
                     </TableCell>
                     <TableCell>
-                      <ContainerStatusBadges summary={group.containerSummary} />
+                      <div className="space-y-1.5">
+                        <ContainerStatusBadges summary={group.containerSummary} />
+                        {group.containers.length > 0 && (
+                          <div className="flex flex-col gap-0.5">
+                            {group.containers.map((name) => {
+                              const app = allApps.find((a) => a.name === name);
+                              const isRunning = app?.status?.startsWith("Up");
+                              return (
+                                <div key={name} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                  <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${isRunning ? "bg-green-500" : "bg-zinc-500"}`} />
+                                  {name}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="hidden sm:table-cell text-muted-foreground text-sm">
                       {formatRelativeTime(group.updatedAt)}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-1">
-                        <Button variant="outline" size="sm">
-                          詳細
-                        </Button>
-                        <Button variant="ghost" size="sm">
-                          設定
-                        </Button>
+                        {onGroupSelect && (
+                          <Button size="sm" onClick={() => onGroupSelect(group)}>
+                            開く
+                          </Button>
+                        )}
+                        {!isDefault && (
+                          <>
+                            <Button variant="outline" size="sm" onClick={() => openEditDialog(group)}>
+                              <Pencil className="h-3.5 w-3.5" />
+                              編集
+                            </Button>
+                            <Button variant="outline" size="sm" className="text-destructive border-destructive/50 hover:text-destructive" onClick={() => handleDeleteGroup(group.id)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                              削除
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -356,6 +455,184 @@ export default function ProjectGroupsDashboard() {
               })}
             </TableBody>
           </Table>
+        </div>
+      )}
+
+      {/* Virtual default notice */}
+      {isVirtualDefault && (
+        <p className="text-xs text-muted-foreground text-center">
+          グループを作成すると、コンテナをグループに振り分けられます。
+        </p>
+      )}
+
+      {/* Create Group Dialog */}
+      {showCreateDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <CardTitle>グループを作成</CardTitle>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => { setShowCreateDialog(false); setNewGroupName(""); setNewGroupDesc(""); }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="text-sm font-medium">グループ名 *</label>
+                <Input
+                  className="mt-1"
+                  placeholder="例: Production Services"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleCreateGroup()}
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">説明</label>
+                <Input
+                  className="mt-1"
+                  placeholder="グループの説明（任意）"
+                  value={newGroupDesc}
+                  onChange={(e) => setNewGroupDesc(e.target.value)}
+                />
+              </div>
+            </CardContent>
+            <CardFooter className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => { setShowCreateDialog(false); setNewGroupName(""); setNewGroupDesc(""); }}
+              >
+                キャンセル
+              </Button>
+              <Button
+                onClick={handleCreateGroup}
+                disabled={!newGroupName.trim() || createLoading}
+              >
+                作成
+              </Button>
+            </CardFooter>
+          </Card>
+        </div>
+      )}
+
+      {/* Edit Group Dialog */}
+      {editingGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80">
+          <Card className="w-full max-w-lg">
+            <CardHeader>
+              <div className="flex justify-between items-center">
+                <CardTitle>グループを編集</CardTitle>
+                <Button variant="ghost" size="icon" onClick={() => setEditingGroup(null)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              {/* Name & Description */}
+              <div className="space-y-3">
+                <div>
+                  <label className="text-sm font-medium">グループ名 *</label>
+                  <Input
+                    className="mt-1"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">説明</label>
+                  <Input
+                    className="mt-1"
+                    value={editDesc}
+                    onChange={(e) => setEditDesc(e.target.value)}
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  onClick={handleUpdateGroup}
+                  disabled={!editName.trim() || editLoading}
+                >
+                  名前・説明を保存
+                </Button>
+              </div>
+
+              {/* Container list */}
+              <div>
+                <p className="text-sm font-medium mb-2">コンテナ一覧</p>
+                {editingGroup.containers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">コンテナがありません</p>
+                ) : (
+                  <div className="space-y-1">
+                    {editingGroup.containers.map((name) => {
+                      const app = allApps.find((a) => a.name === name);
+                      const isRunning = app?.status?.startsWith("Up");
+                      return (
+                        <div
+                          key={name}
+                          className="flex items-center justify-between px-3 py-2 rounded-md border border-border text-sm"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                                isRunning ? "bg-green-500" : "bg-zinc-500"
+                              }`}
+                            />
+                            <span>{name}</span>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                            onClick={() => handleRemoveContainer(editingGroup.id, name)}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Add container */}
+              {availableContainers.length > 0 && (
+                <div>
+                  <p className="text-sm font-medium mb-2">コンテナを追加</p>
+                  <div className="flex gap-2">
+                    <select
+                      className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      value={selectedContainer}
+                      onChange={(e) => setSelectedContainer(e.target.value)}
+                    >
+                      <option value="">コンテナを選択...</option>
+                      {availableContainers.map((app) => (
+                        <option key={app.name} value={app.name}>
+                          {app.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      disabled={!selectedContainer}
+                      onClick={() => handleAddContainer(editingGroup.id, selectedContainer)}
+                    >
+                      追加
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+            <CardFooter className="flex justify-end">
+              <Button variant="outline" onClick={() => setEditingGroup(null)}>
+                閉じる
+              </Button>
+            </CardFooter>
+          </Card>
         </div>
       )}
     </div>

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle, Hammer, FolderKanban, LayoutList, Settings } from "lucide-react";
+import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle, Hammer, FolderKanban, LayoutList, Settings, ChevronLeft } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import ProjectGroupsDashboard from "@/components/ProjectGroupsDashboard";
@@ -284,7 +284,47 @@ export default function Dashboard() {
     }
   };
 
-  const [currentView, setCurrentView] = useState<"groups" | "containers">("groups");
+  const [currentView, setCurrentView] = useState<"groups" | "containers" | "group-detail">("groups");
+  const [selectedGroup, setSelectedGroup] = useState<{ id: string; name: string; description: string; containers: string[] } | null>(null);
+  const [allGroups, setAllGroups] = useState<{ id: string; name: string; containers: string[] }[]>([]);
+  const [moveTargets, setMoveTargets] = useState<Record<string, string>>({});
+
+  const fetchGroups = async () => {
+    const res = await fetch("/api/groups");
+    if (res.ok) {
+      const data = await res.json();
+      setAllGroups(data);
+    }
+  };
+
+  const handleGroupSelect = (group: { id: string; name: string; description: string; containers: string[] }) => {
+    setSelectedGroup(group);
+    setCurrentView("group-detail");
+    fetchGroups();
+  };
+
+  const moveContainer = async (containerName: string, fromGroupId: string, toGroupId: string) => {
+    if (!toGroupId) return;
+    if (fromGroupId !== "default") {
+      await fetch(`/api/groups/${fromGroupId}/containers/${containerName}`, { method: "DELETE" });
+    }
+    await fetch(`/api/groups/${toGroupId}/containers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ container_name: containerName }),
+    });
+    setMoveTargets((prev) => ({ ...prev, [containerName]: "" }));
+    // Refresh selectedGroup data
+    const res = await fetch("/api/groups");
+    if (res.ok) {
+      const updated = await res.json();
+      setAllGroups(updated);
+      if (selectedGroup) {
+        const found = updated.find((g: { id: string }) => g.id === fromGroupId);
+        if (found) setSelectedGroup(found);
+      }
+    }
+  };
 
   const isDuplicate = apps.some((app) => app.name === newAppName);
   const isCreateDisabled = !newAppName.trim() || isDuplicate || createLoading;
@@ -463,11 +503,11 @@ export default function Dashboard() {
           </p>
           <button
             className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors text-left ${
-              currentView === "groups"
+              currentView === "groups" || currentView === "group-detail"
                 ? "bg-accent text-accent-foreground font-medium"
                 : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             }`}
-            onClick={() => setCurrentView("groups")}
+            onClick={() => { setCurrentView("groups"); setSelectedGroup(null); }}
           >
             <FolderKanban className="h-4 w-4 flex-shrink-0" />
             ホーム（グループ一覧）
@@ -499,7 +539,200 @@ export default function Dashboard() {
                 <h2 className="text-2xl font-bold tracking-tight">プロジェクトグループ</h2>
                 <p className="text-muted-foreground mt-1">コンテナをグループ（プロジェクト）単位で管理します</p>
               </div>
-              <ProjectGroupsDashboard />
+              <ProjectGroupsDashboard onGroupSelect={handleGroupSelect} />
+            </div>
+          ) : currentView === "group-detail" && selectedGroup ? (
+            <div className="max-w-6xl mx-auto space-y-6">
+              <div className="flex items-center gap-3">
+                <Button variant="ghost" size="sm" onClick={() => { setCurrentView("groups"); setSelectedGroup(null); }}>
+                  <ChevronLeft className="mr-1 h-4 w-4" />
+                  グループ一覧
+                </Button>
+                <div className="h-4 w-px bg-border" />
+                <div>
+                  <h2 className="text-2xl font-bold tracking-tight">{selectedGroup.name}</h2>
+                  {selectedGroup.description && (
+                    <p className="text-muted-foreground mt-0.5 text-sm">{selectedGroup.description}</p>
+                  )}
+                </div>
+              </div>
+              {selectedGroup.containers.length === 0 ? (
+                <div className="text-center py-16 text-muted-foreground">
+                  コンテナがありません。グループ編集からコンテナを追加してください。
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {selectedGroup.containers.map((containerName) => {
+                    const app = apps.find((a) => a.name === containerName);
+                    if (!app) {
+                      return (
+                        <Card key={containerName} className="flex flex-col border-border opacity-60">
+                          <CardHeader>
+                            <CardTitle className="text-xl">{containerName}</CardTitle>
+                            <CardDescription>未デプロイ</CardDescription>
+                          </CardHeader>
+                        </Card>
+                      );
+                    }
+                    const isUp = app.status.startsWith("Up");
+                    const authBadge = authLabel(app.auth_type);
+                    return (
+                      <Card key={app.name} className="flex flex-col transition-all hover:shadow-md border-border">
+                        <CardHeader>
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <CardTitle className="text-xl">{app.name}</CardTitle>
+                              <CardDescription>Container App</CardDescription>
+                            </div>
+                            <div className="flex gap-1">
+                              {authBadge && (
+                                <Badge variant="outline">
+                                  <Shield className="mr-1 h-3 w-3" />
+                                  {authBadge}
+                                </Badge>
+                              )}
+                              <Badge variant={isUp ? "default" : "secondary"}>
+                                {isUp ? "Running" : app.status}
+                              </Badge>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="flex-grow space-y-4">
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              variant={isUp ? "outline" : "default"}
+                              size="sm"
+                              onClick={() => handleDeploy(app.name)}
+                              disabled={loadingApps.has(app.name)}
+                            >
+                              {loadingApps.has(app.name) ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : isUp ? <RefreshCw className="mr-2 h-4 w-4" /> : <Play className="mr-2 h-4 w-4" />}
+                              {isUp ? "Restart" : "Deploy"}
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => handleStop(app.name)}
+                              disabled={loadingApps.has(app.name) || !isUp}
+                            >
+                              <Square className="mr-2 h-4 w-4" />
+                              Stop
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => handleDelete(app.name)}
+                              disabled={loadingApps.has(app.name)}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete
+                            </Button>
+                            <Button
+                              variant={logs[app.name] ? "default" : "secondary"}
+                              size="sm"
+                              onClick={() => toggleLogs(app.name)}
+                            >
+                              <Terminal className="mr-2 h-4 w-4" />
+                              Logs
+                            </Button>
+                            <Button
+                              variant={passwords[app.name] ? "default" : "secondary"}
+                              size="sm"
+                              onClick={() => togglePassword(app.name)}
+                            >
+                              <Key className="mr-2 h-4 w-4" />
+                              Password
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => openAuthDialog(app.name)}
+                            >
+                              <Shield className="mr-2 h-4 w-4" />
+                              Auth
+                            </Button>
+                          </div>
+                          {passwords[app.name] && (
+                            <div className="mt-3 rounded-md bg-muted p-3 border border-border">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <p className="text-xs text-muted-foreground mb-1">IDE Password</p>
+                                  <code className="text-sm font-mono font-semibold">{passwords[app.name]}</code>
+                                </div>
+                                <div className="flex gap-1">
+                                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => copyToClipboard(passwords[app.name])} title="Copy">
+                                    <Copy className="h-4 w-4" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => resetPassword(app.name)} title="Reset Password">
+                                    <RotateCcw className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          {logs[app.name] && (
+                            <div className="mt-4 rounded-md bg-muted p-2 h-48 border border-border">
+                              <ScrollArea className="h-full w-full">
+                                <pre className="text-xs font-mono p-2">{logs[app.name]}</pre>
+                              </ScrollArea>
+                            </div>
+                          )}
+                        </CardContent>
+                        <CardFooter className="pt-4 border-t border-border flex flex-col gap-2">
+                          <div className="flex gap-2 w-full">
+                            <Button
+                              className="flex-1 font-semibold"
+                              variant="default"
+                              disabled={!isUp}
+                              onClick={() => {
+                                const traefikPort = process.env.NEXT_PUBLIC_TRAEFIK_PORT || "8085";
+                                const host = window.location.hostname;
+                                window.open(`http://${host}:${traefikPort}/${app.name}-dashboard/`, "_blank");
+                              }}
+                            >
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              Open Dashboard
+                            </Button>
+                            <Button
+                              className="flex-1"
+                              variant="outline"
+                              onClick={() => startRebuild(app.name)}
+                              disabled={rebuildState?.appName === app.name && rebuildState.status === "building"}
+                            >
+                              <Hammer className="mr-2 h-4 w-4" />
+                              Rebuild
+                            </Button>
+                          </div>
+                          {allGroups.filter((g) => g.id !== "default" && g.id !== selectedGroup.id).length > 0 && (
+                            <div className="flex gap-2 w-full items-center">
+                              <span className="text-xs text-muted-foreground flex-shrink-0">移動:</span>
+                              <select
+                                className="flex-1 text-xs rounded-md border border-input bg-background px-2 py-1.5 text-foreground"
+                                value={moveTargets[app.name] || ""}
+                                onChange={(e) => setMoveTargets((prev) => ({ ...prev, [app.name]: e.target.value }))}
+                              >
+                                <option value="">グループを選択...</option>
+                                {allGroups
+                                  .filter((g) => g.id !== "default" && g.id !== selectedGroup.id)
+                                  .map((g) => (
+                                    <option key={g.id} value={g.id}>{g.name}</option>
+                                  ))}
+                              </select>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={!moveTargets[app.name]}
+                                onClick={() => moveContainer(app.name, selectedGroup.id, moveTargets[app.name])}
+                              >
+                                移動
+                              </Button>
+                            </div>
+                          )}
+                        </CardFooter>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : (
             <div className="max-w-6xl mx-auto space-y-6">
