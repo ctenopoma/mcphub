@@ -67,6 +67,16 @@ docker compose up -d --build
 
 > **Note:** 初回ビルドには数分かかります (Rust コンパイル + npm ビルド + Traefik イメージ取得)。
 
+### proxy 環境で VSIX を配布する
+
+ホスト側で offvsix などを使って取得した `.vsix` を `offline-vsix/` に置くと、子コンテナの code-server 起動時に自動インストールされます。
+
+- `offline-vsix/` は DinD マネージャへ読み取り専用マウントされます
+- 各アプリコンテナは起動時に `/opt/offline-vsix/*.vsix` を走査して自動反映します
+- 拡張機能の実体は各アプリの `/apps/.code-server/<app>/extensions` に永続化されます
+
+運用メモは [offline-vsix/README.md](offline-vsix/README.md) を参照してください。
+
 ### 停止
 
 ```bash
@@ -97,6 +107,8 @@ docker compose down
 | `http://<HOST>:8085/<app>/` | FastAPI REST API (ForwardAuth による認証あり) |
 | `http://<HOST>:8085/<app>-ide/` | Web IDE (code-server、独自パスワード認証) |
 | `http://<HOST>:8085/<app>-dashboard/` | アプリダッシュボード (IDE / Rebuild / App リンク) |
+
+> `offline-vsix/` に `.vsix` を追加したあとは、対象アプリを Rebuild するか再デプロイすると次回起動時に取り込まれます。
 
 ### 4. アプリダッシュボード
 
@@ -175,6 +187,7 @@ McpHub/
 ├── Dockerfile.manager          マルチステージビルド (Node → Rust → DinD)
 ├── entrypoint.sh               dockerd / Traefik / manager-ui / MCP 起動
 ├── mcp_server.py               FastMCP 動的ツール登録 (SSE)
+├── offline-vsix/               ホストで取得した VSIX の配置場所
 ├── requirements.txt            Python 依存関係
 ├── apps/
 │   └── myapp/                  子コンテナテンプレート

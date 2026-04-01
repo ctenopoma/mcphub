@@ -10,3 +10,5 @@ build-logs.txt
 __pycache__
 
 apps/
+offline-vsix/*
+!offline-vsix/README.md

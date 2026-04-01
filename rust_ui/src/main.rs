@@ -18,6 +18,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tower_http::services::{ServeDir, ServeFile};
 use std::fs;
 
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+#[cfg(windows)]
+use std::os::windows::process::ExitStatusExt;
+
 // ── Data structures ──
 
 #[derive(Serialize)]
@@ -110,6 +115,10 @@ struct AppState {
 // ── Auth config persistence ──
 
 const AUTH_CONFIG_PATH: &str = "/apps/auth_config.json";
+const CODE_SERVER_HOST_ROOT: &str = "/apps/.code-server";
+const CODE_SERVER_CONFIG_DIR: &str = "/root/.config/code-server";
+const CODE_SERVER_EXTENSIONS_DIR: &str = "/root/.local/share/code-server/extensions";
+const OFFLINE_VSIX_DIR: &str = "/offline-vsix";
 const GROUPS_CONFIG_PATH: &str = "/apps/groups_config.json";
 
 fn load_groups() -> Vec<Group> {
@@ -156,15 +165,19 @@ fn is_leap_year(year: u32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
+fn empty_process_output() -> std::process::Output {
+    std::process::Output {
+        status: std::process::ExitStatus::from_raw(0),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    }
+}
+
 fn get_running_containers() -> HashMap<String, String> {
     let docker_ps = Command::new("docker")
         .args(["ps", "--format", "{{.Names}}|{{.Status}}"])
         .output()
-        .unwrap_or_else(|_| std::process::Output {
-            status: std::os::unix::process::ExitStatusExt::from_raw(0),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        });
+        .unwrap_or_else(|_| empty_process_output());
     let ps_output = String::from_utf8_lossy(&docker_ps.stdout);
     let mut running = HashMap::new();
     for line in ps_output.lines() {
@@ -193,6 +206,40 @@ fn save_auth_config(config: &HashMap<String, AuthAppConfig>) -> Result<(), std::
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     fs::write(AUTH_CONFIG_PATH, json)
+}
+
+fn code_server_config_dir(app_name: &str) -> String {
+    format!("{}/{}", CODE_SERVER_HOST_ROOT, app_name)
+}
+
+fn code_server_extensions_host_dir(app_name: &str) -> String {
+    format!("{}/extensions", code_server_config_dir(app_name))
+}
+
+fn ensure_code_server_host_dirs(app_name: &str) {
+    let config_dir = code_server_config_dir(app_name);
+    let extensions_dir = code_server_extensions_host_dir(app_name);
+    let _ = fs::create_dir_all(&config_dir);
+    let _ = fs::create_dir_all(&extensions_dir);
+}
+
+fn add_app_runtime_mounts(args: &mut Vec<String>, app_name: &str) {
+    args.push("-v".into());
+    args.push(format!("/apps/{}:/app", app_name));
+    args.push("-v".into());
+    args.push(format!("{}:{}", code_server_config_dir(app_name), CODE_SERVER_CONFIG_DIR));
+    args.push("-v".into());
+    args.push(format!("{}:{}", code_server_extensions_host_dir(app_name), CODE_SERVER_EXTENSIONS_DIR));
+    args.push("-v".into());
+    args.push(format!("{}:/opt/offline-vsix:ro", OFFLINE_VSIX_DIR));
+}
+
+fn code_server_start_command(app_name: &str) -> String {
+    format!(
+        "code-server --auth password --bind-addr 0.0.0.0:8000 --abs-proxy-base-path /{}-ide --extensions-dir {} /app",
+        app_name,
+        CODE_SERVER_EXTENSIONS_DIR
+    )
 }
 
 // ── Session helpers ──
@@ -553,11 +600,7 @@ async fn list_apps(State(state): State<Arc<AppState>>) -> Json<Vec<AppStatus>> {
     let docker_ps = Command::new("docker")
         .args(["ps", "--format", "{{.Names}}|{{.Status}}"])
         .output()
-        .unwrap_or_else(|_| std::process::Output {
-            status: std::os::unix::process::ExitStatusExt::from_raw(0),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        });
+        .unwrap_or_else(|_| empty_process_output());
 
     let ps_output = String::from_utf8_lossy(&docker_ps.stdout);
     let mut running_containers = std::collections::HashMap::new();
@@ -627,19 +670,17 @@ async fn deploy_app(
         return Json(serde_json::json!({"error": "Docker build failed"}));
     }
 
-    // Ensure code-server config directory exists on host for password persistence
-    let cs_config_dir = format!("/apps/.code-server/{}", app_name);
-    let _ = fs::create_dir_all(&cs_config_dir);
+    // Ensure code-server config and extensions directories exist on host for persistence
+    ensure_code_server_host_dirs(&app_name);
 
     // Build docker run args with Traefik labels
     let mut args: Vec<String> = vec![
         "run".into(), "-d".into(),
         "--name".into(), app_name.clone(),
         "--network".into(), "mcp-net".into(),
-        "-v".into(), format!("/apps/{}:/app", app_name),
-        "-v".into(), format!("{}:/root/.config/code-server", cs_config_dir),
         "-e".into(), format!("APP_NAME={}", app_name),
     ];
+    add_app_runtime_mounts(&mut args, &app_name);
 
     // Traefik enable
     args.push("--label=traefik.enable=true".into());
@@ -719,8 +760,8 @@ async fn delete_app(
         }
     }
 
-    // Remove code-server config directory
-    let cs_config_dir = format!("/apps/.code-server/{}", app_name);
+    // Remove code-server config directory and persisted extensions
+    let cs_config_dir = code_server_config_dir(&app_name);
     let _ = fs::remove_dir_all(&cs_config_dir);
 
     // Remove auth config entry
@@ -813,19 +854,17 @@ async fn rebuild_app(
                     .output()
                     .await;
 
-                // Ensure code-server config directory exists on host for password persistence
-                let cs_config_dir = format!("/apps/.code-server/{}", app_name);
-                let _ = tokio::fs::create_dir_all(&cs_config_dir).await;
+                // Ensure code-server config and extensions directories exist on host for persistence
+                ensure_code_server_host_dirs(&app_name);
 
                 // Build docker run args (mirrors deploy_app)
                 let mut args: Vec<String> = vec![
                     "run".into(), "-d".into(),
                     "--name".into(), app_name.clone(),
                     "--network".into(), "mcp-net".into(),
-                    "-v".into(), format!("/apps/{}:/app", app_name),
-                    "-v".into(), format!("{}:/root/.config/code-server", cs_config_dir),
                     "-e".into(), format!("APP_NAME={}", app_name),
                 ];
+                add_app_runtime_mounts(&mut args, &app_name);
                 args.push("--label=traefik.enable=true".into());
                 args.push(format!("--label=traefik.http.routers.{}.rule=PathPrefix(`/{}`)", app_name, app_name));
                 args.push(format!("--label=traefik.http.routers.{}.service={}", app_name, app_name));
@@ -881,12 +920,12 @@ async fn rebuild_app(
 // ── Password helpers ──
 
 fn read_cs_config(app_name: &str) -> Option<String> {
-    let path = format!("/apps/.code-server/{}/config.yaml", app_name);
+    let path = format!("{}/config.yaml", code_server_config_dir(app_name));
     fs::read_to_string(path).ok()
 }
 
 fn update_cs_config_password(app_name: &str, password_line: &str) -> bool {
-    let path = format!("/apps/.code-server/{}/config.yaml", app_name);
+    let path = format!("{}/config.yaml", code_server_config_dir(app_name));
     let config = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return false,
@@ -906,7 +945,7 @@ fn restart_code_server(app_name: &str) {
         .status();
     let _ = Command::new("docker")
         .args(["exec", "-d", app_name, "sh", "-c",
-            &format!("code-server --auth password --bind-addr 0.0.0.0:8000 --abs-proxy-base-path /{}-ide /app", app_name)])
+            &code_server_start_command(app_name)])
         .status();
 }
 
@@ -969,15 +1008,42 @@ async fn create_app(Path(app_name): Path<String>) -> Json<serde_json::Value> {
         return Json(serde_json::json!({"error": format!("Failed to create directory: {}", e)}));
     }
 
-    let dockerfile = r#"FROM python:3.11-slim
-ENV PASSWORD=mcp-ide-pass
+        let dockerfile = r#"FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CODE_SERVER_EXTENSIONS_DIR=/root/.local/share/code-server/extensions
+ENV OFFLINE_VSIX_DIR=/opt/offline-vsix
+
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://code-server.dev/install.sh | sh
+
+RUN cat <<'EOF' > /usr/local/bin/start-app.sh
+#!/bin/sh
+set -eu
+
+mkdir -p /root/.config/code-server "${CODE_SERVER_EXTENSIONS_DIR}"
+
+if [ -d "${OFFLINE_VSIX_DIR}" ]; then
+    find "${OFFLINE_VSIX_DIR}" -maxdepth 1 -type f \( -name '*.vsix' -o -name '*.VSIX' \) | sort | while read -r vsix; do
+        [ -n "${vsix}" ] || continue
+        echo "Installing offline VSIX: $(basename "${vsix}")"
+        code-server --install-extension "${vsix}" --extensions-dir "${CODE_SERVER_EXTENSIONS_DIR}" --force
+    done
+fi
+
+code-server --auth password --bind-addr 0.0.0.0:8000 --abs-proxy-base-path "/${APP_NAME}-ide" --extensions-dir "${CODE_SERVER_EXTENSIONS_DIR}" /app &
+exec uvicorn app:app --host 0.0.0.0 --port 80 --reload
+EOF
+RUN chmod +x /usr/local/bin/start-app.sh
+
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD code-server --bind-addr 0.0.0.0:8000 /app & uvicorn app:app --host 0.0.0.0 --port 80 --reload
+
+ENV APP_NAME=app
+
+CMD ["/usr/local/bin/start-app.sh"]
 "#;
 
     let requirements = "fastapi\nuvicorn\npython-multipart\n";

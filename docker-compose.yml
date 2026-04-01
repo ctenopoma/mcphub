@@ -21,6 +21,7 @@ services:
       - MANAGER_PASSWORD=${MANAGER_PASSWORD:-mcp-hub-password}
     volumes:
       - ./apps:/apps
+      - ./offline-vsix:/offline-vsix:ro
       - docker-data:/var/lib/docker
 
 volumes:
