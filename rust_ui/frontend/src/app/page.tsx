@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle, Hammer, FolderKanban, LayoutList, Settings, ChevronLeft } from "lucide-react";
+import { Play, Square, Terminal, Trash2, ExternalLink, RefreshCw, Key, Copy, RotateCcw, Plus, X, LogOut, Lock, Shield, Shuffle, Hammer, FolderKanban, LayoutList, Settings, ChevronLeft, FileCode } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import ProjectGroupsDashboard from "@/components/ProjectGroupsDashboard";
@@ -48,6 +48,16 @@ export default function Dashboard() {
     status: "building" | "success" | "failed";
   } | null>(null);
   const buildLogRef = useRef<HTMLDivElement>(null);
+
+  // Dockerfile editor
+  const [dockerfileEditor, setDockerfileEditor] = useState<{
+    appName: string;
+    content: string;
+    loading: boolean;
+    saving: boolean;
+    error: string | null;
+    isContainerDown: boolean;
+  } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Auto-scroll rebuild terminal to bottom on each new log line
@@ -281,6 +291,43 @@ export default function Dashboard() {
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const openDockerfileEditor = async (appName: string, isContainerDown: boolean) => {
+    setDockerfileEditor({ appName, content: "", loading: true, saving: false, error: null, isContainerDown });
+    try {
+      const res = await fetch(`/api/apps/${appName}/dockerfile`);
+      if (res.ok) {
+        const content = await res.text();
+        setDockerfileEditor((prev) => prev ? { ...prev, content, loading: false } : null);
+      } else {
+        setDockerfileEditor((prev) => prev ? { ...prev, error: "Dockerfileの読み込みに失敗しました", loading: false } : null);
+      }
+    } catch {
+      setDockerfileEditor((prev) => prev ? { ...prev, error: "サーバーに接続できません", loading: false } : null);
+    }
+  };
+
+  const saveDockerfile = async (rebuild: boolean) => {
+    if (!dockerfileEditor) return;
+    setDockerfileEditor((prev) => prev ? { ...prev, saving: true, error: null } : null);
+    try {
+      const res = await fetch(`/api/apps/${dockerfileEditor.appName}/dockerfile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: dockerfileEditor.content }),
+      });
+      if (res.ok) {
+        const appName = dockerfileEditor.appName;
+        setDockerfileEditor(null);
+        if (rebuild) startRebuild(appName);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setDockerfileEditor((prev) => prev ? { ...prev, saving: false, error: data.error || "保存に失敗しました" } : null);
+      }
+    } catch {
+      setDockerfileEditor((prev) => prev ? { ...prev, saving: false, error: "サーバーに接続できません" } : null);
     }
   };
 
@@ -650,7 +697,21 @@ export default function Dashboard() {
                               <Shield className="mr-2 h-4 w-4" />
                               Auth
                             </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => openDockerfileEditor(app.name, !isUp)}
+                            >
+                              <FileCode className="mr-2 h-4 w-4" />
+                              Dockerfile
+                            </Button>
                           </div>
+                          {!isUp && (
+                            <div className="rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-600 dark:text-amber-400 flex items-start gap-2">
+                              <span>⚠️</span>
+                              <span>コンテナが停止しています。Dockerfileを修正して「Save &amp; Rebuild」で復旧できます。</span>
+                            </div>
+                          )}
                           {passwords[app.name] && (
                             <div className="mt-3 rounded-md bg-muted p-3 border border-border">
                               <div className="flex items-center justify-between">
@@ -825,7 +886,22 @@ export default function Dashboard() {
                       <Shield className="mr-2 h-4 w-4" />
                       Auth
                     </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => openDockerfileEditor(app.name, !isUp)}
+                    >
+                      <FileCode className="mr-2 h-4 w-4" />
+                      Dockerfile
+                    </Button>
                   </div>
+
+                  {!isUp && (
+                    <div className="rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-600 dark:text-amber-400 flex items-start gap-2">
+                      <span>⚠️</span>
+                      <span>コンテナが停止しています。Dockerfileを修正して「Save &amp; Rebuild」で復旧できます。</span>
+                    </div>
+                  )}
 
                   {passwords[app.name] && (
                     <div className="mt-3 rounded-md bg-muted p-3 border border-border">
@@ -1049,6 +1125,85 @@ export default function Dashboard() {
           </Card>
         </div>
       )}
+      {/* Dockerfile Editor Modal */}
+      {dockerfileEditor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+          <Card className="w-full max-w-3xl flex flex-col" style={{ height: "80vh" }}>
+            <CardHeader className="flex-none">
+              <div className="flex justify-between items-center">
+                <CardTitle className="flex items-center gap-2">
+                  <FileCode className="h-5 w-5" />
+                  Dockerfile: {dockerfileEditor.appName}
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setDockerfileEditor(null)}
+                  disabled={dockerfileEditor.saving}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              {dockerfileEditor.isContainerDown && (
+                <div className="mt-2 rounded-md bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
+                  ⚠️ コンテナが停止しています。Dockerfileを修正して「Save &amp; Rebuild」で復旧できます。
+                </div>
+              )}
+              {dockerfileEditor.error && (
+                <p className="mt-2 text-sm text-destructive">{dockerfileEditor.error}</p>
+              )}
+            </CardHeader>
+            <CardContent className="flex-1 min-h-0 pb-0">
+              {dockerfileEditor.loading ? (
+                <div className="h-full flex items-center justify-center">
+                  <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <textarea
+                  className="h-full w-full rounded-md bg-black text-green-400 font-mono text-xs p-4 resize-none border border-border focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={dockerfileEditor.content}
+                  onChange={(e) =>
+                    setDockerfileEditor((prev) =>
+                      prev ? { ...prev, content: e.target.value } : null
+                    )
+                  }
+                  spellCheck={false}
+                />
+              )}
+            </CardContent>
+            <CardFooter className="flex-none flex justify-end gap-2 pt-4">
+              <Button
+                variant="outline"
+                onClick={() => setDockerfileEditor(null)}
+                disabled={dockerfileEditor.saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => saveDockerfile(false)}
+                disabled={dockerfileEditor.loading || dockerfileEditor.saving}
+              >
+                {dockerfileEditor.saving && <RefreshCw className="mr-2 h-4 w-4 animate-spin" />}
+                Save
+              </Button>
+              <Button
+                onClick={() => saveDockerfile(true)}
+                disabled={dockerfileEditor.loading || dockerfileEditor.saving}
+              >
+                {dockerfileEditor.saving ? (
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Hammer className="mr-2 h-4 w-4" />
+                )}
+                Save &amp; Rebuild
+              </Button>
+            </CardFooter>
+          </Card>
+        </div>
+      )}
+
       {/* Rebuild Terminal Overlay */}
       {rebuildState && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">

@@ -102,6 +102,11 @@ struct AddContainerRequest {
     container_name: String,
 }
 
+#[derive(Deserialize)]
+struct UpdateDockerfileRequest {
+    content: String,
+}
+
 #[derive(Clone)]
 struct AppState {
     session_secret: String,
@@ -313,6 +318,7 @@ async fn main() {
         .route("/groups/{id}", put(update_group).delete(delete_group))
         .route("/groups/{id}/containers", post(add_container_to_group))
         .route("/groups/{id}/containers/{container}", delete(remove_container_from_group))
+        .route("/apps/{app_name}/dockerfile", get(get_dockerfile).put(update_dockerfile))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Public API routes (no dashboard auth)
@@ -413,6 +419,37 @@ async fn set_auth_config(
     match save_auth_config(&config) {
         Ok(_) => Json(serde_json::json!({"status": "ok"})),
         Err(e) => Json(serde_json::json!({"error": format!("Failed to save: {}", e)})),
+    }
+}
+
+// ── Dockerfile editor endpoints ──
+
+async fn get_dockerfile(Path(app_name): Path<String>) -> impl IntoResponse {
+    if app_name.contains('/') || app_name.contains("..") {
+        return (StatusCode::BAD_REQUEST, "Invalid app name").into_response();
+    }
+    let path = format!("/apps/{}/Dockerfile", app_name);
+    match fs::read_to_string(&path) {
+        Ok(content) => (StatusCode::OK, content).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Dockerfile not found").into_response(),
+    }
+}
+
+async fn update_dockerfile(
+    Path(app_name): Path<String>,
+    Json(body): Json<UpdateDockerfileRequest>,
+) -> Json<serde_json::Value> {
+    if app_name.contains('/') || app_name.contains("..") {
+        return Json(serde_json::json!({"error": "Invalid app name"}));
+    }
+    let app_dir = format!("/apps/{}", app_name);
+    if !std::path::Path::new(&app_dir).exists() {
+        return Json(serde_json::json!({"error": "App not found"}));
+    }
+    let path = format!("{}/Dockerfile", app_dir);
+    match fs::write(&path, &body.content) {
+        Ok(_) => Json(serde_json::json!({"status": "ok"})),
+        Err(e) => Json(serde_json::json!({"error": format!("Failed to write Dockerfile: {}", e)})),
     }
 }
 
