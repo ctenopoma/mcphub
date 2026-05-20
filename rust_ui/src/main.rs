@@ -789,11 +789,12 @@ async fn delete_app(
         .args(["rm", "-f", &app_name])
         .status();
 
-    // Remove app directory
+    // Remove app directory using shell to handle permission issues from container-created files
     let app_dir = format!("/apps/{}", app_name);
     if std::path::Path::new(&app_dir).exists() {
-        if let Err(e) = fs::remove_dir_all(&app_dir) {
-            return Json(serde_json::json!({"error": format!("Failed to remove directory: {}", e)}));
+        let rm_status = Command::new("rm").args(["-rf", &app_dir]).status();
+        if !rm_status.map(|s| s.success()).unwrap_or(false) {
+            return Json(serde_json::json!({"error": "Failed to remove app directory"}));
         }
     }
 
@@ -1212,6 +1213,8 @@ h1{{font-size:1.5rem;margin-bottom:.25rem}}
 <script>
 const APP_NAME = "{app_name}";
 const API_PREFIX = window.location.port === "8081" ? "/api" : "/manager-api/api";
+const ADMIN_URL = window.location.port === "8081" ? "/" : `http://${{window.location.hostname}}:8081/`;
+document.querySelector('.back-link').setAttribute('href', ADMIN_URL);
 let lineNum = 0;
 let idePassword = "";
 
